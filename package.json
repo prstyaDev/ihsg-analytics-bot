@@ -23,7 +23,6 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "node-cache": "^5.1.2",
-    "ollama-ai-provider": "^1.2.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "telegraf": "^4.16.3",

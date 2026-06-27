@@ -10,22 +10,22 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 - **Caching:** Response GoAPI di-cache 60 detik via `node-cache` untuk hemat request.
 - **Visualisasi Chart:** Render grafik harga saham 30 hari ke belakang menjadi gambar dengan `chartjs-node-canvas`.
 - **Time-Aware:** AI mengetahui tanggal dan waktu saat ini (WIB) secara real-time.
-- **Ollama Fallback:** Jika Gemini API mencapai limit kuota (rate limit) atau error, sistem otomatis menggunakan LLM lokal Ollama sebagai cadangan.
+- **AI Aggregator Primary:** Menggunakan AI Aggregator sebagai primary LLM provider dengan Google Gemini sebagai fallback saat rate limit atau error.
 
 ## Arsitektur
 
 ```text
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Telegram   │────▶│   Telegraf   │────▶│   Hermes     │────▶│   Google     │
-│   User       │◀────│   Bot Handler│◀────│   AI Agent   │◀────│   Gemini API │
+│   Telegram   │────▶│   Telegraf   │────▶│   Hermes     │────▶│ AI Aggregator│
+│   User       │◀────│   Bot Handler│◀────│   AI Agent   │◀────│   Primary    │
 └──────────────┘     └──────────────┘     └──────┬───────┘     └──────────────┘
                                                   │                  ▲
                                           tool call│                  │ Fallback
                                     ┌─────────────┼─────────────┐    │ Error
                                     ▼             ▼             ▼    ▼
                              ┌───────────┐ ┌───────────┐ ┌──────────────┐
-                             │  GoAPI    │ │  SQLite   │ │   Ollama     │
-                             │  IDX Data │ │  Watchlist│ │  Lokal LLM   │
+                             │  GoAPI    │ │  SQLite   │ │   Google     │
+                             │  IDX Data │ │  Watchlist│ │   Gemini     │
                              └───────────┘ └───────────┘ └──────────────┘
 ```
 
@@ -45,23 +45,22 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 |---|---|---|
 | TypeScript | 6.x | Bahasa utama |
 | Vercel AI SDK | 6.x | Orkestrasi LLM + tool calling |
-| @ai-sdk/google | latest | Provider Google Gemini |
-| @ai-sdk/openai | 3.x | Provider OpenAI-compatible untuk Ollama fallback |
+| @ai-sdk/google | latest | Provider Google Gemini (fallback) |
+| @ai-sdk/openai | 3.x | Provider OpenAI-compatible untuk AI Aggregator (primary) |
 | Telegraf | 4.x | Telegram Bot API |
 | Express | 5.x | HTTP server (webhook mode) |
 | SQLite3 + sqlite | latest | Database lokal untuk watchlist & portfolio |
 | Axios | 1.x | HTTP client untuk GoAPI |
 | Zod | 4.x | Validasi schema |
 | node-cache | 5.x | In-memory caching |
-| Ollama | - | Runtime LLM lokal (Fallback engine) |
 
 ## Prasyarat
 
 - **Node.js** ≥ 18
 - **Telegram Bot Token** dari [@BotFather](https://t.me/BotFather)
 - **GoAPI Key** dari [goapi.io](https://goapi.io)
-- **Google AI API Key** dari [Google AI Studio](https://aistudio.google.com/apikey)
-- **Ollama** (opsional tapi disarankan) terinstal dengan model, misal `qwen3:8b`, untuk penanganan *rate limit fallback*.
+- **AI Aggregator API Key** dari [lite.koboillm.com](https://lite.koboillm.com) untuk primary LLM provider
+- **Google AI API Key** dari [Google AI Studio](https://aistudio.google.com/apikey) untuk fallback provider
 
 ## Setup
 
@@ -88,7 +87,16 @@ TELEGRAM_BOT_TOKEN="your-telegram-bot-token"
 # [WAJIB] API key dari goapi.io untuk data saham IDX
 GOAPI_KEY="your-goapi-key"
 
-# [WAJIB] API key dari Google AI Studio untuk Gemini
+# [WAJIB] API key dari AI Aggregator untuk primary LLM provider
+AGGREGATOR_API_KEY="your-aggregator-api-key"
+
+# [OPSIONAL] Base URL AI Aggregator (default: https://lite.koboillm.com/v1)
+AGGREGATOR_BASE_URL=https://lite.koboillm.com/v1
+
+# [OPSIONAL] Model AI Aggregator (default: openai/gpt-4o)
+AGGREGATOR_MODEL=openai/gpt-4o
+
+# [WAJIB] API key dari Google AI Studio untuk Gemini fallback
 GOOGLE_GENERATIVE_AI_API_KEY="your-google-ai-api-key"
 
 # [OPSIONAL] Port untuk Express server (default: 3000)
@@ -96,10 +104,6 @@ PORT=3000
 
 # [OPSIONAL] Mode aplikasi: development (polling) | production (webhook)
 NODE_ENV=development
-
-# [OPSIONAL] Konfigurasi Ollama untuk Fallback jika Gemini Free Tier Limit
-OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_MODEL=qwen3:8b
 ```
 
 #### Detail Environment Variables
@@ -108,11 +112,12 @@ OLLAMA_MODEL=qwen3:8b
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | ✅ | - | Token dari @BotFather |
 | `GOAPI_KEY` | ✅ | - | API key GoAPI untuk data saham IDX |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | ✅ | - | API key Google AI Studio untuk Gemini |
+| `AGGREGATOR_API_KEY` | ✅ | - | API key AI Aggregator untuk primary provider |
+| `AGGREGATOR_BASE_URL` | ❌ | `https://lite.koboillm.com/v1` | Base URL AI Aggregator endpoint |
+| `AGGREGATOR_MODEL` | ❌ | `openai/gpt-4o` | Model AI Aggregator yang digunakan |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | ✅ | - | API key Google AI Studio untuk Gemini fallback |
 | `PORT` | ❌ | `3000` | Port Express (hanya untuk mode production/webhook) |
 | `NODE_ENV` | ❌ | `development` | `development` = polling, `production` = webhook |
-| `OLLAMA_BASE_URL` | ❌ | `http://localhost:11434/v1` | Endpoint Ollama untuk fallback |
-| `OLLAMA_MODEL` | ❌ | `qwen3:8b` | Model Ollama lokal untuk fallback |
 
 ### 3. Jalankan
 
@@ -198,7 +203,8 @@ User mengirim pesan
 | Error | Penanganan |
 |-------|------------|
 | **Timeout > 120 detik** | Bot mengirim pesan: "Pengambilan data market sedang padat" |
-| **Google AI Rate Limit** | Menangkap error `RESOURCE_EXHAUSTED`, otomatis mencoba fallback ke Ollama. Jika Ollama mati, bot mengirim error pesan teguran deskriptif bukan internal crash. |
+| **AI Aggregator Rate Limit/Error** | Sistem otomatis menggunakan Google Gemini sebagai fallback. Log: `[System] Menggunakan Fallback Google Gemini...` |
+| **Gemini Fallback Error** | Jika Gemini juga gagal, bot mengirim error message: "⚠️ API Aggregator mencapai limit, dan Google Gemini sebagai fallback juga mengalami error. Silakan coba lagi nanti." |
 | **GoAPI Gagal** | Per-tool error handling, return pesan error ke AI untuk disampaikan |
 | **Tool Data Kosong** | Fallback Phase 2 untuk generate analisis dari data mentah |
 
