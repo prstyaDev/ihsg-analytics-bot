@@ -8,6 +8,8 @@ const schema = z.object({
   AGGREGATOR_API_KEY: z.string(),
   AGGREGATOR_BASE_URL: z.string().default('https://lite.koboillm.com/v1'),
   AGGREGATOR_MODEL: z.string().default('openai/gpt-4o'),
+  SUPABASE_URL: z.string().url(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production']).default('development'),
 });

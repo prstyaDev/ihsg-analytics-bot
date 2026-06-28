@@ -1,15 +1,20 @@
 import express from 'express';
 import { bot } from './bot';
 import { env } from './config/env';
-import { initDatabase } from './db';
+import { testConnection } from './db';
 
 const app = express();
 app.use(express.json());
 
 async function main() {
-  // Inisialisasi database sebelum bot aktif
-  await initDatabase();
-  console.log('[System] Database terhubung dan siap digunakan.');
+  // Test database connection (graceful degradation if fails)
+  const result = await testConnection();
+  if (result.success) {
+    console.log('[System] Database connected and ready.');
+  } else {
+    console.warn('[System] Database connection failed - watchlist features may be unavailable:', result.error);
+    console.warn('[System] Bot will continue running with limited functionality.');
+  }
 
   if (env.NODE_ENV === 'production') {
     const path = `/webhook/${bot.secretPathComponent()}`;

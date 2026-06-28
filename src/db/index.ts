@@ -1,68 +1,117 @@
-import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
-import path from 'path';
+import { createClient } from '@supabase/supabase-js';
+import { env } from '../config/env';
 
-let db: Database<sqlite3.Database, sqlite3.Statement>;
+// ────────────────────────────────────────────────────────────────────
+// TypeScript Database Interfaces
+// ────────────────────────────────────────────────────────────────────
+export interface WatchlistRow {
+  id: number;
+  chat_id: string;
+  symbol: string;
+  created_at: string;
+}
 
-export async function initDatabase(): Promise<void> {
+export interface PortfolioRow {
+  id: number;
+  chat_id: string;
+  symbol: string;
+  average_price: number;
+  total_lot: number;
+  created_at: string;
+}
+
+export interface AlertRow {
+  id: number;
+  chat_id: string;
+  symbol: string;
+  target_price: number;
+  condition: 'ABOVE' | 'BELOW';
+  is_active: boolean;
+  created_at: string;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Supabase Client Singleton (Service Role Key bypasses RLS)
+// ────────────────────────────────────────────────────────────────────
+export const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+
+console.log('[Database] Supabase client initialized');
+
+// ────────────────────────────────────────────────────────────────────
+// Connection Healthcheck
+// ────────────────────────────────────────────────────────────────────
+export async function testConnection(): Promise<{ success: boolean; error?: string }> {
   try {
-    const dbPath = path.resolve(process.cwd(), 'hermes.db');
-
-    db = await open({
-      filename: dbPath,
-      driver: sqlite3.Database
-    });
-
-    console.log(`[Database] Koneksi SQLite berhasil → ${dbPath}`);
-
-    // ── Tabel portfolio ──────────────────────────────────────────────────────
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS portfolio (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id       INTEGER NOT NULL,
-        symbol        TEXT    NOT NULL,
-        average_price REAL    NOT NULL,
-        total_lot     INTEGER NOT NULL,
-        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log('[Database] Tabel "portfolio" siap.');
-
-    // ── Tabel watchlist ──────────────────────────────────────────────────────
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS watchlist (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id    INTEGER NOT NULL,
-        symbol     TEXT    NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log('[Database] Tabel "watchlist" siap.');
-
-    // ── Tabel alerts ─────────────────────────────────────────────────────────
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS alerts (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id      INTEGER NOT NULL,
-        symbol       TEXT    NOT NULL,
-        target_price REAL    NOT NULL,
-        condition    TEXT    NOT NULL CHECK (condition IN ('ABOVE', 'BELOW')),
-        is_active    BOOLEAN DEFAULT 1,
-        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log('[Database] Tabel "alerts" siap.');
-
-    console.log('[Database] Semua tabel berhasil diinisialisasi.');
-  } catch (error) {
-    console.error('[Database Error] Gagal menginisialisasi database:', error);
-    throw error;
+    const { error } = await supabase.from('watchlist').select('id').limit(1);
+    
+    if (error) {
+      console.error('[Database] Connection test failed:', error.message);
+      return { success: false, error: error.message };
+    }
+    
+    console.log('[Database] Connection test successful');
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Database] Connection test exception:', err?.message);
+    return { success: false, error: err?.message || 'Unknown error' };
   }
 }
 
-export function getDb(): Database<sqlite3.Database, sqlite3.Statement> {
-  if (!db) {
-    throw new Error('[Database] Database belum diinisialisasi. Panggil initDatabase() terlebih dahulu.');
+// ────────────────────────────────────────────────────────────────────
+// Watchlist Accessor Functions
+// ────────────────────────────────────────────────────────────────────
+export async function checkWatchlistExists(chatId: string, symbol: string) {
+  const { data, error } = await supabase
+    .from('watchlist')
+    .select('id')
+    .eq('chat_id', chatId)
+    .eq('symbol', symbol)
+    .maybeSingle();
+  
+  if (error) {
+    console.error('[DB] checkWatchlistExists error:', error.message);
   }
-  return db;
+  
+  return { data, error };
+}
+
+export async function addToWatchlist(chatId: string, symbol: string) {
+  const { data, error } = await supabase
+    .from('watchlist')
+    .insert({ chat_id: chatId, symbol })
+    .select();
+  
+  if (error) {
+    console.error('[DB] addToWatchlist error:', error.message);
+  }
+  
+  return { data, error };
+}
+
+export async function getWatchlist(chatId: string) {
+  const { data, error } = await supabase
+    .from('watchlist')
+    .select('symbol')
+    .eq('chat_id', chatId);
+  
+  if (error) {
+    console.error('[DB] getWatchlist error:', error.message);
+  }
+  
+  return { data, error };
+}
+
+export async function removeFromWatchlist(chatId: string, symbol: string) {
+  const { data, error } = await supabase
+    .from('watchlist')
+    .delete()
+    .eq('chat_id', chatId)
+    .eq('symbol', symbol)
+    .select();
+  
+  if (error) {
+    console.error('[DB] removeFromWatchlist error:', error.message);
+  }
+  
+  return { data, error };
 }

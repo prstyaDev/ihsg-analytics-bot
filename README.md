@@ -24,8 +24,8 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
                                     ┌─────────────┼─────────────┐    │ Error
                                     ▼             ▼             ▼    ▼
                              ┌───────────┐ ┌───────────┐ ┌──────────────┐
-                             │  GoAPI    │ │  SQLite   │ │   Google     │
-                             │  IDX Data │ │  Watchlist│ │   Gemini     │
+                             │  GoAPI    │ │ Supabase  │ │   Google     │
+                             │  IDX Data │ │ PostgreSQL│ │   Gemini     │
                              └───────────┘ └───────────┘ └──────────────┘
 ```
 
@@ -35,7 +35,7 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 | **Bot Handler** | `src/bot/index.ts` | Menerima pesan, timeout handling, intercept chart |
 | **AI Agent** | `src/agent/hermes.ts` | Orkestrasi LLM, session context, tool routing |
 | **Tool Registry** | `src/tools/registry.ts` | 11 tools (market data + watchlist CRUD) |
-| **Database** | `src/db/index.ts` | SQLite init & accessor (portfolio, watchlist, alerts) |
+| **Database** | `src/db/index.ts` | Supabase init & accessor (portfolio, watchlist, alerts) |
 | **Chart Util** | `src/utils/chart.ts` | Render grafik saham via chartjs-node-canvas |
 | **Config** | `src/config/env.ts` | Validasi environment variables dengan Zod |
 
@@ -49,7 +49,7 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 | @ai-sdk/openai | 3.x | Provider OpenAI-compatible untuk AI Aggregator (primary) |
 | Telegraf | 4.x | Telegram Bot API |
 | Express | 5.x | HTTP server (webhook mode) |
-| SQLite3 + sqlite | latest | Database lokal untuk watchlist & portfolio |
+| @supabase/supabase-js | 2.x | Cloud PostgreSQL database (Supabase) |
 | Axios | 1.x | HTTP client untuk GoAPI |
 | Zod | 4.x | Validasi schema |
 | node-cache | 5.x | In-memory caching |
@@ -61,6 +61,7 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 - **GoAPI Key** dari [goapi.io](https://goapi.io)
 - **AI Aggregator API Key** dari [lite.koboillm.com](https://lite.koboillm.com) untuk primary LLM provider
 - **Google AI API Key** dari [Google AI Studio](https://aistudio.google.com/apikey) untuk fallback provider
+- **Supabase Account** dengan project aktif untuk cloud database PostgreSQL
 
 ## Setup
 
@@ -99,6 +100,13 @@ AGGREGATOR_MODEL=openai/gpt-4o
 # [WAJIB] API key dari Google AI Studio untuk Gemini fallback
 GOOGLE_GENERATIVE_AI_API_KEY="your-google-ai-api-key"
 
+# [WAJIB] Supabase project URL dari Dashboard → Settings → API
+SUPABASE_URL="your-supabase-project-url"
+
+# [WAJIB] Supabase service role key dari Dashboard → Settings → API
+# ⚠️ RAHASIA! Jangan expose ke client. Service role bypass RLS untuk backend.
+SUPABASE_SERVICE_ROLE_KEY="your-supabase-service-role-key"
+
 # [OPSIONAL] Port untuk Express server (default: 3000)
 PORT=3000
 
@@ -116,6 +124,8 @@ NODE_ENV=development
 | `AGGREGATOR_BASE_URL` | ❌ | `https://lite.koboillm.com/v1` | Base URL AI Aggregator endpoint |
 | `AGGREGATOR_MODEL` | ❌ | `openai/gpt-4o` | Model AI Aggregator yang digunakan |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | ✅ | - | API key Google AI Studio untuk Gemini fallback |
+| `SUPABASE_URL` | ✅ | - | Supabase project URL dari Dashboard → Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | - | Supabase service role key (⚠️ RAHASIA, hanya untuk backend) |
 | `PORT` | ❌ | `3000` | Port Express (hanya untuk mode production/webhook) |
 | `NODE_ENV` | ❌ | `development` | `development` = polling, `production` = webhook |
 
@@ -155,9 +165,9 @@ Watchlist tools menggunakan **factory function** pattern: `chatId` di-inject oto
 | 10 | `get_watchlist` | — | Lihat isi watchlist |
 | 11 | `remove_from_watchlist` | `symbol` | Hapus saham dari watchlist |
 
-## Database (SQLite)
+## Database (Supabase PostgreSQL)
 
-Bot menggunakan SQLite (`hermes.db`) untuk penyimpanan lokal. Database dibuat otomatis saat pertama kali dijalankan.
+Bot menggunakan Supabase (PostgreSQL) untuk penyimpanan cloud. Database tables dibuat otomatis via migration file saat terhubung ke Supabase project dengan GitHub Integration.
 
 ### Tabel
 

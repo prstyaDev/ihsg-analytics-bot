@@ -3,7 +3,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import NodeCache from 'node-cache';
 import { env } from '../config/env';
-import { getDb } from '../db';
+import { checkWatchlistExists, addToWatchlist, getWatchlist, removeFromWatchlist } from '../db';
 
 const api = axios.create({
   baseURL: 'https://api.goapi.io',
@@ -353,9 +353,9 @@ export const requestChart = tool({
 // WATCHLIST TOOLS — Factory function (chatId di-inject otomatis, bukan dari AI)
 // ────────────────────────────────────────────────────────────────────────────────
 export function createWatchlistTools(chatId: string) {
-  const numericChatId = Number(chatId);
+  const chatIdStr = String(chatId);
 
-  const addToWatchlist = tool({
+  const addToWatchlistTool = tool({
     description:
       'Menambahkan saham ke daftar watchlist pengguna. ' +
       'Gunakan tool ini ketika pengguna ingin memantau atau mengikuti suatu saham. ' +
@@ -367,22 +367,21 @@ export function createWatchlistTools(chatId: string) {
     }),
     execute: async ({ symbol }) => {
       try {
-        const db = getDb();
         const sym = symbol.toUpperCase();
 
-        const existing = await db.get(
-          'SELECT id FROM watchlist WHERE chat_id = ? AND symbol = ?',
-          [numericChatId, sym]
-        );
+        const { data: existing } = await checkWatchlistExists(chatIdStr, sym);
 
         if (existing) {
           return `[SYSTEM] Saham ${sym} sudah ada di watchlist Anda.`;
         }
 
-        await db.run(
-          'INSERT INTO watchlist (chat_id, symbol) VALUES (?, ?)',
-          [numericChatId, sym]
-        );
+        const { error } = await addToWatchlist(chatIdStr, sym);
+        
+        if (error) {
+          console.error('[add_to_watchlist Error]:', error.message);
+          return `[SYSTEM ERROR] Gagal menambahkan saham ke watchlist.`;
+        }
+
         console.log(`[Watchlist] Added ${sym} for chat ${chatId}`);
         return `[SYSTEM] Saham ${sym} berhasil ditambahkan ke watchlist Anda.`;
       } catch (err: any) {
@@ -392,7 +391,7 @@ export function createWatchlistTools(chatId: string) {
     }
   });
 
-  const getWatchlist = tool({
+  const getWatchlistTool = tool({
     description:
       'Menampilkan daftar saham yang ada di watchlist pengguna. ' +
       'Gunakan tool ini ketika pengguna ingin melihat saham yang sedang dipantau. ' +
@@ -400,11 +399,12 @@ export function createWatchlistTools(chatId: string) {
     inputSchema: z.object({}),
     execute: async () => {
       try {
-        const db = getDb();
-        const rows = await db.all(
-          'SELECT symbol FROM watchlist WHERE chat_id = ?',
-          [numericChatId]
-        );
+        const { data: rows, error } = await getWatchlist(chatIdStr);
+
+        if (error) {
+          console.error('[get_watchlist Error]:', error.message);
+          return '[SYSTEM ERROR] Gagal mengambil data watchlist.';
+        }
 
         if (!rows || rows.length === 0) {
           return '[SYSTEM] Watchlist Anda masih kosong.';
@@ -420,7 +420,7 @@ export function createWatchlistTools(chatId: string) {
     }
   });
 
-  const removeFromWatchlist = tool({
+  const removeFromWatchlistTool = tool({
     description:
       'Menghapus saham dari daftar watchlist pengguna. ' +
       'Gunakan tool ini ketika pengguna ingin berhenti memantau suatu saham. ' +
@@ -432,15 +432,16 @@ export function createWatchlistTools(chatId: string) {
     }),
     execute: async ({ symbol }) => {
       try {
-        const db = getDb();
         const sym = symbol.toUpperCase();
 
-        const result = await db.run(
-          'DELETE FROM watchlist WHERE chat_id = ? AND symbol = ?',
-          [numericChatId, sym]
-        );
+        const { data, error } = await removeFromWatchlist(chatIdStr, sym);
 
-        if (result.changes && result.changes > 0) {
+        if (error) {
+          console.error('[remove_from_watchlist Error]:', error.message);
+          return `[SYSTEM ERROR] Gagal menghapus saham dari watchlist.`;
+        }
+
+        if (data && data.length > 0) {
           console.log(`[Watchlist] Removed ${sym} for chat ${chatId}`);
           return `[SYSTEM] Saham ${sym} berhasil dihapus dari watchlist Anda.`;
         } else {
@@ -454,9 +455,9 @@ export function createWatchlistTools(chatId: string) {
   });
 
   return {
-    add_to_watchlist: addToWatchlist,
-    get_watchlist: getWatchlist,
-    remove_from_watchlist: removeFromWatchlist
+    add_to_watchlist: addToWatchlistTool,
+    get_watchlist: getWatchlistTool,
+    remove_from_watchlist: removeFromWatchlistTool
   };
 }
 
