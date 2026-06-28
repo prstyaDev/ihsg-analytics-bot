@@ -8,7 +8,7 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 - **Watchlist Pribadi:** Simpan, lihat, dan hapus saham dari daftar pantauan personal berbasis SQLite.
 - **Session Memory:** AI mengingat riwayat percakapan per chat (max 20 pesan, TTL 1 jam).
 - **Caching:** Response GoAPI di-cache 60 detik via `node-cache` untuk hemat request.
-- **Visualisasi Chart:** Render grafik harga saham 30 hari ke belakang menjadi gambar dengan `chartjs-node-canvas`.
+- **Visualisasi Chart:** Render grafik harga saham 30 hari ke belakang menjadi gambar via QuickChart.io API (no native dependencies).
 - **Time-Aware:** AI mengetahui tanggal dan waktu saat ini (WIB) secara real-time.
 - **AI Aggregator Primary:** Menggunakan AI Aggregator sebagai primary LLM provider dengan Google Gemini sebagai fallback saat rate limit atau error.
 
@@ -36,7 +36,7 @@ Bot Telegram berbasis AI untuk analisis saham IHSG secara real-time. Menggunakan
 | **AI Agent** | `src/agent/hermes.ts` | Orkestrasi LLM, session context, tool routing |
 | **Tool Registry** | `src/tools/registry.ts` | 11 tools (market data + watchlist CRUD) |
 | **Database** | `src/db/index.ts` | Supabase init & accessor (portfolio, watchlist, alerts) |
-| **Chart Util** | `src/utils/chart.ts` | Render grafik saham via chartjs-node-canvas |
+| **Chart Util** | `src/utils/chart.ts` | Render grafik saham via QuickChart.io API |
 | **Config** | `src/config/env.ts` | Validasi environment variables dengan Zod |
 
 ## Tech Stack
@@ -255,7 +255,7 @@ ishg-bot/
 │   ├── tools/
 │   │   └── registry.ts       # 11 tool definitions (GoAPI + Watchlist)
 │   └── utils/
-│       └── chart.ts          # Chart renderer (chartjs-node-canvas)
+│       └── chart.ts          # Chart renderer (QuickChart.io API)
 ├── .env                      # Environment variables (tidak di-commit)
 ├── .env.example              # Template environment variables
 ├── .gitignore
