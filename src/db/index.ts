@@ -115,3 +115,153 @@ export async function removeFromWatchlist(chatId: string, symbol: string) {
   
   return { data, error };
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Alert Accessor Functions
+// ────────────────────────────────────────────────────────────────────
+export async function getActiveAlerts() {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .select('*')
+      .eq('is_active', true);
+    
+    if (error) {
+      console.error('[DB] getActiveAlerts error:', error.message);
+      return { data: null, error };
+    }
+    
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] getActiveAlerts exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function getAlertsByUser(chatId: string) {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .select('*')
+      .eq('chat_id', chatId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('[DB] getAlertsByUser error:', error.message);
+      return { data: null, error };
+    }
+    
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] getAlertsByUser exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function createAlert(
+  chatId: string,
+  symbol: string,
+  targetPrice: number,
+  condition: 'ABOVE' | 'BELOW'
+) {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .insert({
+        chat_id: chatId,
+        symbol: symbol.toUpperCase(),
+        target_price: targetPrice,
+        condition,
+        is_active: true
+      })
+      .select();
+    
+    if (error) {
+      console.error('[DB] createAlert error:', error.message);
+      return { data: null, error };
+    }
+    
+    console.log(`[DB] Alert created: ${symbol} ${condition} ${targetPrice} for chat ${chatId}`);
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] createAlert exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function deleteAlert(chatId: string, symbol: string) {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .delete()
+      .eq('chat_id', chatId)
+      .eq('symbol', symbol.toUpperCase())
+      .eq('is_active', true)
+      .select();
+    
+    if (error) {
+      console.error('[DB] deleteAlert error:', error.message);
+      return { data: null, error };
+    }
+    
+    console.log(`[DB] Alert(s) deleted: ${symbol} for chat ${chatId}`);
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] deleteAlert exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function deactivateAlert(alertId: number) {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .update({ is_active: false })
+      .eq('id', alertId)
+      .select();
+    
+    if (error) {
+      console.error('[DB] deactivateAlert error:', error.message);
+      return { data: null, error };
+    }
+    
+    console.log(`[DB] Alert deactivated: ID ${alertId}`);
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] deactivateAlert exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function getActiveAlertsGroupedBySymbol() {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .select('*')
+      .eq('is_active', true);
+    
+    if (error) {
+      console.error('[DB] getActiveAlertsGroupedBySymbol error:', error.message);
+      return { data: null, error };
+    }
+    
+    // Group alerts by symbol for efficient price checking
+    const grouped = new Map<string, AlertRow[]>();
+    
+    if (data) {
+      (data as AlertRow[]).forEach((alert) => {
+        const symbol = alert.symbol.toUpperCase();
+        if (!grouped.has(symbol)) {
+          grouped.set(symbol, []);
+        }
+        grouped.get(symbol)!.push(alert);
+      });
+    }
+    
+    return { data: grouped, error: null };
+  } catch (err: any) {
+    console.error('[DB] getActiveAlertsGroupedBySymbol exception:', err?.message);
+    return { data: null, error: err };
+  }
+}

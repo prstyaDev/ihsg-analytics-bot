@@ -462,6 +462,139 @@ export function createWatchlistTools(chatId: string) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
+// ALERT TOOLS — Factory function (chatId di-inject otomatis, bukan dari AI)
+// ────────────────────────────────────────────────────────────────────────────────
+export function createAlertTools(chatId: string) {
+  const chatIdStr = String(chatId);
+
+  const createAlertTool = tool({
+    description:
+      'Membuat alert (pemberitahuan) harga saham yang akan mengirim notifikasi otomatis ke pengguna ' +
+      'ketika harga mencapai target tertentu. ' +
+      'Gunakan tool ini ketika pengguna ingin diberi tahu jika harga saham naik di atas atau turun di bawah nilai tertentu. ' +
+      'Contoh: "alert BBCA di atas 10000", "beri tahu saya jika BBRI turun di bawah 5000", "set alert TLKM above 3500".',
+    inputSchema: z.object({
+      symbol: z
+        .string()
+        .describe('Kode emiten saham 4 huruf di BEI, contoh: BBCA'),
+      targetPrice: z
+        .number()
+        .positive()
+        .describe('Harga target untuk alert dalam Rupiah, contoh: 10000'),
+      condition: z
+        .enum(['ABOVE', 'BELOW'])
+        .describe('Kondisi alert: ABOVE (di atas) atau BELOW (di bawah) harga target')
+    }),
+    execute: async ({ symbol, targetPrice, condition }) => {
+      try {
+        const sym = symbol.toUpperCase();
+        const { createAlert } = await import('../db');
+
+        const { data, error } = await createAlert(chatIdStr, sym, targetPrice, condition);
+
+        if (error) {
+          console.error('[create_alert Error]:', error.message);
+          return '[SYSTEM ERROR] Gagal membuat alert. Silakan coba lagi.';
+        }
+
+        const conditionText = condition === 'ABOVE' ? 'di atas' : 'di bawah';
+        console.log(`[Alert] Created: ${sym} ${condition} ${targetPrice} for chat ${chatId}`);
+        
+        return (
+          `[SYSTEM] ✅ Alert berhasil dibuat!\n` +
+          `📊 Saham: ${sym}\n` +
+          `🎯 Kondisi: ${conditionText} Rp ${targetPrice.toLocaleString('id-ID')}\n` +
+          `🔔 Anda akan menerima notifikasi otomatis ketika kondisi terpenuhi selama jam trading (Senin-Jumat 09:00-16:00 WIB).`
+        );
+      } catch (err: any) {
+        console.error('[create_alert Error]:', err?.message);
+        return '[SYSTEM ERROR] Gagal membuat alert. Silakan coba lagi.';
+      }
+    }
+  });
+
+  const viewAlertsTool = tool({
+    description:
+      'Menampilkan daftar alert harga saham yang aktif milik pengguna. ' +
+      'Gunakan tool ini ketika pengguna ingin melihat alert apa saja yang sudah dibuat. ' +
+      'Contoh: "lihat alert saya", "tampilkan semua alert", "daftar alert aktif", "alert apa saja yang sudah saya set?".',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const { getAlertsByUser } = await import('../db');
+        const { data: alerts, error } = await getAlertsByUser(chatIdStr);
+
+        if (error) {
+          console.error('[view_alerts Error]:', error.message);
+          return '[SYSTEM ERROR] Gagal mengambil data alert.';
+        }
+
+        if (!alerts || alerts.length === 0) {
+          return '[SYSTEM] Anda belum memiliki alert aktif. Buat alert dengan perintah seperti: "alert BBCA di atas 10000".';
+        }
+
+        console.log(`[Alert] Fetched ${alerts.length} active alert(s) for chat ${chatId}`);
+
+        let message = `[SYSTEM DATA - ALERTS] Daftar alert aktif Anda (${alerts.length} alert):\n\n`;
+        
+        alerts.forEach((alert, index) => {
+          const conditionText = alert.condition === 'ABOVE' ? 'di atas' : 'di bawah';
+          message += `${index + 1}. ${alert.symbol} ${conditionText} Rp ${alert.target_price.toLocaleString('id-ID')}\n`;
+        });
+
+        message += '\nSampaikan daftar alert ini ke pengguna dengan format yang rapi dan informatif.';
+        
+        return message;
+      } catch (err: any) {
+        console.error('[view_alerts Error]:', err?.message);
+        return '[SYSTEM ERROR] Gagal mengambil data alert.';
+      }
+    }
+  });
+
+  const deleteAlertTool = tool({
+    description:
+      'Menghapus semua alert untuk suatu saham tertentu dari daftar alert pengguna. ' +
+      'Gunakan tool ini ketika pengguna ingin membatalkan atau menghapus alert yang sudah dibuat. ' +
+      'Contoh: "hapus alert BBCA", "delete alert BBRI", "batalkan alert TLKM", "remove alert ASII".',
+    inputSchema: z.object({
+      symbol: z
+        .string()
+        .describe('Kode emiten saham 4 huruf di BEI yang alert-nya ingin dihapus, contoh: BBCA')
+    }),
+    execute: async ({ symbol }) => {
+      try {
+        const sym = symbol.toUpperCase();
+        const { deleteAlert } = await import('../db');
+
+        const { data, error } = await deleteAlert(chatIdStr, sym);
+
+        if (error) {
+          console.error('[delete_alert Error]:', error.message);
+          return '[SYSTEM ERROR] Gagal menghapus alert.';
+        }
+
+        if (data && data.length > 0) {
+          console.log(`[Alert] Deleted ${data.length} alert(s) for ${sym} (chat ${chatId})`);
+          return `[SYSTEM] ✅ Berhasil menghapus ${data.length} alert untuk saham ${sym}.`;
+        } else {
+          return `[SYSTEM] ⚠️  Tidak ditemukan alert aktif untuk saham ${sym}.`;
+        }
+      } catch (err: any) {
+        console.error('[delete_alert Error]:', err?.message);
+        return '[SYSTEM ERROR] Gagal menghapus alert.';
+      }
+    }
+  });
+
+  return {
+    create_alert: createAlertTool,
+    view_alerts: viewAlertsTool,
+    delete_alert: deleteAlertTool
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
 // TOOLS REGISTRY
 // ────────────────────────────────────────────────────────────────────────────────
 const baseTools = {
@@ -478,7 +611,8 @@ const baseTools = {
 export function createAllTools(chatId: string) {
   return {
     ...baseTools,
-    ...createWatchlistTools(chatId)
+    ...createWatchlistTools(chatId),
+    ...createAlertTools(chatId)
   };
 }
 

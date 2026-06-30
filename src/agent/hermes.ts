@@ -83,6 +83,9 @@ TOOLS YANG TERSEDIA:
 9. add_to_watchlist — Tambahkan saham ke watchlist pengguna (parameter: symbol saja)
 10. get_watchlist — Lihat daftar saham di watchlist pengguna (tanpa parameter)
 11. remove_from_watchlist — Hapus saham dari watchlist pengguna (parameter: symbol saja)
+12. create_alert — Buat alert harga otomatis untuk notifikasi (parameter: symbol, targetPrice, condition: 'ABOVE'|'BELOW')
+13. view_alerts — Lihat semua alert aktif pengguna (tanpa parameter)
+14. delete_alert — Hapus alert untuk saham tertentu (parameter: symbol)
 
 ATURAN:
 1. Pilih tool yang paling relevan berdasarkan pertanyaan pengguna. Boleh memanggil lebih dari satu tool jika diperlukan.
@@ -97,7 +100,10 @@ ATURAN:
 10. Jika pengguna bertanya tentang bandar, broker, asing masuk/keluar, akumulasi/distribusi, gunakan get_broker_summary.
 11. Jika pengguna MEMINTA GAMBAR, CHART, GRAFIK, atau VISUALISASI dari sebuah pergerakan saham, gunakan request_chart.
 12. Jika pengguna ingin menambah, melihat, atau menghapus saham dari watchlist, gunakan tool watchlist yang sesuai. TIDAK perlu mengisi chatId, sistem akan menanganinya otomatis.
-13. Kamu memiliki memori percakapan. Gunakan konteks percakapan sebelumnya untuk menjawab pertanyaan follow-up.`;
+13. Jika pengguna ingin membuat alert harga ("beri tahu saya jika...", "alert jika...", "notif kalau..."), gunakan create_alert dengan parameter yang sesuai. Alert akan mengirim notifikasi otomatis selama jam trading (Senin-Jumat 09:00-16:00 WIB).
+14. Jika pengguna ingin melihat daftar alert yang sudah dibuat, gunakan view_alerts.
+15. Jika pengguna ingin menghapus atau membatalkan alert, gunakan delete_alert.
+16. Kamu memiliki memori percakapan. Gunakan konteks percakapan sebelumnya untuk menjawab pertanyaan follow-up.`;
 };
 
 export const processQuery = async (input: string, chatId: string) => {
