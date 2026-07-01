@@ -292,6 +292,13 @@ Query real-time market data and get AI-powered insights.
 "RSI TLKM berapa sekarang?"
 "MACD BBRI gimana?"
 
+💼 Bandarmologi & Foreign Flow (NEW - Phase 2):
+"Bandarmologi BBCA"
+"Foreign flow TLKM"
+"Asing masuk BBRI?"
+"Bandar akumulasi ASII?"
+"Liquidity flow UNTR"
+
 🎯 Comprehensive analysis:
 "Analisa lengkap saham ASII"
 "Cek kondisi BBNI secara detail"
@@ -302,6 +309,12 @@ Query real-time market data and get AI-powered insights.
 - **MACD (12/26/9)** - Trend-following momentum indicator
 - **Moving Averages** - SMA 20, EMA 20 (SMA 50 if data available)
 - **Support/Resistance** - Dynamic levels from 30-day highs/lows
+
+**Institutional Trading Analysis (Phase 2):**
+- **Broker Summary** - Top 3 broker accumulation/distribution classification
+- **Foreign Flow** - Net foreign position tracking (1-day, 5-day, 20-day)
+- **Liquidity Flow** - Combined sentiment analysis (VERY_BULLISH to VERY_BEARISH)
+- **Smart Money Tracking** - Institutional trading pattern detection
 
 ---
 
@@ -330,18 +343,20 @@ Query real-time market data and get AI-powered insights.
 | **Entry Point** | `src/index.ts` | Express server, Telegraf initialization, database connection |
 | **Bot Handler** | `src/bot/index.ts` | Message routing, timeout handling, rate limiting |
 | **AI Agent** | `src/agent/hermes.ts` | LLM orchestration, tool calling, session management |
-| **Tool Registry** | `src/tools/registry.ts` | 11 tools for market data + watchlist operations |
+| **Tool Registry** | `src/tools/registry.ts` | 19 tools for market data + watchlist operations |
 | **Database** | `src/db/index.ts` | Supabase client, data access layer |
 | **Chart Utility** | `src/utils/chart.ts` | QuickChart.io integration |
+| **Technical Utility** | `src/utils/technical.ts` | RSI, MACD, MA, S/R calculations |
+| **Bandar Utility** | `src/utils/bandar.ts` | Bandarmologi & foreign flow analysis |
 | **Config** | `src/config/env.ts` | Environment validation (Zod schema) |
 
 ---
 
 ## 🔧 Tool Registry
 
-The bot exposes 18 tools to the AI agent:
+The bot exposes 19 tools to the AI agent:
 
-### Market Data Tools (9)
+### Market Data Tools (10)
 
 | Tool | API Endpoint | Parameters | Description |
 |------|--------------|------------|-------------|
@@ -354,6 +369,7 @@ The bot exposes 18 tools to the AI agent:
 | `get_broker_summary` | `GET /stock/idx/{symbol}/broker_summary` | `symbol`, `date?` | Broker trading activity |
 | `request_chart` | Internal | `symbol` | Generate price chart |
 | `get_technical_indicators` | `GET /stock/idx/{symbol}/historical` + Analysis | `symbol` | RSI, MACD, MA, S/R levels |
+| `get_market_liquidity_flow` | `GET /stock/idx/{symbol}/broker` + `/foreign` | `symbol` | Bandarmologi + Foreign flow analysis |
 
 ### Watchlist Tools (3)
 

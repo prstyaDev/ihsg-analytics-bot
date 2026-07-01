@@ -15,6 +15,7 @@ import {
   removeFromPortfolio
 } from '../db';
 import { analyzeTechnicalIndicators } from '../utils/technical';
+import { combineLiquidityAnalysis } from '../utils/bandar';
 
 const api = axios.create({
   baseURL: 'https://api.goapi.io',
@@ -29,6 +30,9 @@ const cache = new NodeCache({ stdTTL: 60, checkperiod: 30 });
 
 // Separate cache for technical indicators with longer TTL (5 minutes)
 const technicalCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+
+// Separate cache for bandarmologi & foreign flow with 10-minute TTL
+const bandarCache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
 
 function getDateRange(daysBack: number) {
   const to = new Date();
@@ -437,6 +441,90 @@ export const getTechnicalIndicators = tool({
     } catch (err: any) {
       console.error('[Technical Tool Error]:', err?.response?.status, err?.response?.data || err?.message);
       return `[SYSTEM ERROR] Gagal mengambil data analisis teknikal untuk ${symbol.toUpperCase()}. Silakan coba lagi.`;
+    }
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────────
+// 10. GET MARKET LIQUIDITY FLOW (Bandarmologi & Foreign Flow)
+// ────────────────────────────────────────────────────────────────────────────────
+export const getMarketLiquidityFlow = tool({
+  description:
+    'Mendapatkan analisis liquidity flow lengkap untuk suatu saham, meliputi bandarmologi (broker summary) ' +
+    'dan foreign flow (asing masuk/keluar). Menganalisis pola akumulasi/distribusi dari broker besar dan ' +
+    'tracking net foreign position untuk 1-day, 5-day, dan 20-day periods. ' +
+    'Gunakan tool ini ketika pengguna bertanya tentang bandar, broker, foreign flow, asing masuk/keluar, ' +
+    'akumulasi institusional, atau aktivitas smart money. Tool ini juga OTOMATIS dipanggil ketika pengguna ' +
+    'meminta analisis mendalam/lengkap untuk memberikan gambaran komprehensif institutional trading patterns. ' +
+    'Contoh: "bandarmologi BBCA", "foreign flow TLKM", "asing masuk BBRI?", "bandar akumulasi ASII?", "analisa lengkap UNTR".',
+  inputSchema: z.object({
+    symbol: z
+      .string()
+      .describe('Kode emiten saham 4 huruf di BEI untuk dianalisis liquidity flow-nya, contoh: BBCA')
+  }),
+  execute: async ({ symbol }) => {
+    try {
+      const sym = symbol.toUpperCase();
+      const currentDate = new Date().toISOString().split('T')[0];
+      const cacheKey = `liquidity_${sym}_${currentDate}`;
+
+      // Check cache first
+      const cached = bandarCache.get<string>(cacheKey);
+      if (cached) {
+        console.log(`[Bandar Tool] Cache HIT: ${cacheKey}`);
+        return cached;
+      }
+
+      console.log(`[Bandar Tool] Cache MISS: ${cacheKey} - Fetching fresh data`);
+
+      // Parallel fetch: Broker Summary + Foreign Flow
+      const [brokerResponse, foreignResponse] = await Promise.allSettled([
+        api.get(`/stock/idx/${sym}/broker_summary`, {
+          params: { date: currentDate }
+        }),
+        api.get(`/stock/idx/${sym}/foreign`)
+      ]);
+
+      console.log(`[Bandar Tool] Broker fetch status: ${brokerResponse.status}`);
+      console.log(`[Bandar Tool] Foreign fetch status: ${foreignResponse.status}`);
+
+      // Extract data with graceful degradation
+      const brokerData = brokerResponse.status === 'fulfilled' 
+        ? brokerResponse.value.data 
+        : null;
+      
+      const foreignData = foreignResponse.status === 'fulfilled' 
+        ? foreignResponse.value.data 
+        : null;
+
+      // Check if both endpoints failed
+      if (!brokerData && !foreignData) {
+        console.error('[Bandar Tool] Both broker and foreign endpoints failed');
+        return `[SYSTEM ERROR] Gagal mengambil data liquidity flow untuk ${sym}. Silakan coba lagi atau pastikan kode saham sudah benar.`;
+      }
+
+      // Perform combined liquidity analysis
+      const analysis = combineLiquidityAnalysis(sym, brokerData, foreignData);
+
+      console.log(`[Bandar Tool] Analysis complete for ${sym}: Sentiment=${analysis.overallSentiment}`);
+      console.log(`[Bandar Tool] Broker classification: ${analysis.broker.classification}`);
+      console.log(`[Bandar Tool] Foreign trend: ${analysis.foreign.trend}`);
+
+      // Format output for AI consumption
+      const output =
+        `[SYSTEM DATA - LIQUIDITY FLOW ANALYSIS] Emiten: ${sym} | Tanggal: ${currentDate}\n\n` +
+        `${analysis.summary}\n\n` +
+        `Berikan rangkuman dan rekomendasi investasi berdasarkan analisis liquidity flow di atas. ` +
+        `Jelaskan implikasi dari aktivitas institusional ini terhadap pergerakan harga jangka pendek-menengah.`;
+
+      // Cache the result for 10 minutes
+      bandarCache.set(cacheKey, output);
+      console.log(`[Bandar Tool] Cached result for ${sym} (TTL: 10 minutes)`);
+
+      return output;
+    } catch (err: any) {
+      console.error('[Bandar Tool Error]:', err?.response?.status, err?.response?.data || err?.message);
+      return `[SYSTEM ERROR] Gagal mengambil data liquidity flow untuk ${symbol.toUpperCase()}. Silakan coba lagi.`;
     }
   }
 });
@@ -1288,7 +1376,8 @@ const baseTools = {
   get_fundamentals: getFundamentals,
   get_broker_summary: getBrokerSummary,
   request_chart: requestChart,
-  get_technical_indicators: getTechnicalIndicators
+  get_technical_indicators: getTechnicalIndicators,
+  get_market_liquidity_flow: getMarketLiquidityFlow
 };
 
 export function createAllTools(chatId: string) {

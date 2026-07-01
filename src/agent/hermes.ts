@@ -81,19 +81,20 @@ TOOLS YANG TERSEDIA:
 7. get_broker_summary — Analisis bandarmologi: aktivitas broker lokal/asing (parameter: symbol, date?, investor?)
 8. request_chart — Menghasilkan visualisasi grafik tren harga saham dalam bentuk gambar (parameter: symbol)
 9. get_technical_indicators — Analisis teknikal lengkap: RSI, MACD, Moving Average, Support/Resistance untuk trend analysis (parameter: symbol)
-10. add_to_watchlist — Tambahkan saham ke watchlist pengguna (parameter: symbol saja)
-11. get_watchlist — Lihat daftar saham di watchlist pengguna (tanpa parameter)
-12. remove_from_watchlist — Hapus saham dari watchlist pengguna (parameter: symbol saja)
-13. create_alert — Buat alert harga otomatis untuk notifikasi. Mendukung 3 tipe:
+10. get_market_liquidity_flow — Analisis liquidity flow lengkap: bandarmologi (broker summary) + foreign flow untuk tracking smart money dan institutional trading patterns (parameter: symbol)
+11. add_to_watchlist — Tambahkan saham ke watchlist pengguna (parameter: symbol saja)
+12. get_watchlist — Lihat daftar saham di watchlist pengguna (tanpa parameter)
+13. remove_from_watchlist — Hapus saham dari watchlist pengguna (parameter: symbol saja)
+14. create_alert — Buat alert harga otomatis untuk notifikasi. Mendukung 3 tipe:
     - Alert harga tetap: "alert BBCA di atas 10000"
     - Alert persentase: "alert BBRI naik 5%" atau "alert ASII turun 3%"
     - Trailing stop: "alert TLKM turun 3% dari harga tertinggi hari ini"
     (parameter: symbol, targetPrice?, condition?, percentage?, isTrailingStop?)
-14. view_alerts — Lihat semua alert aktif pengguna dengan status detail (tanpa parameter)
-15. delete_alert — Hapus alert untuk saham tertentu (parameter: symbol)
-16. add_to_portfolio — Tambahkan saham ke portfolio investasi dengan harga rata-rata dan jumlah lot (parameter: symbol, averagePrice, totalLot). Sistem otomatis menghitung harga rata-rata tertimbang jika saham sudah ada.
-17. get_portfolio — Tampilkan daftar portfolio lengkap dengan perhitungan profit/loss real-time, nilai pasar, modal, dan persentase keuntungan/kerugian (tanpa parameter)
-18. remove_from_portfolio — Hapus saham dari portfolio investasi (parameter: symbol saja)
+15. view_alerts — Lihat semua alert aktif pengguna dengan status detail (tanpa parameter)
+16. delete_alert — Hapus alert untuk saham tertentu (parameter: symbol)
+17. add_to_portfolio — Tambahkan saham ke portfolio investasi dengan harga rata-rata dan jumlah lot (parameter: symbol, averagePrice, totalLot). Sistem otomatis menghitung harga rata-rata tertimbang jika saham sudah ada.
+18. get_portfolio — Tampilkan daftar portfolio lengkap dengan perhitungan profit/loss real-time, nilai pasar, modal, dan persentase keuntungan/kerugian (tanpa parameter)
+19. remove_from_portfolio — Hapus saham dari portfolio investasi (parameter: symbol saja)
 
 ATURAN:
 1. Pilih tool yang paling relevan berdasarkan pertanyaan pengguna. Boleh memanggil lebih dari satu tool jika diperlukan.
@@ -106,9 +107,10 @@ ATURAN:
 8. Jika pengguna minta data historis mentah atau tren harga, gunakan get_historical_data.
 9. Jika pengguna bertanya tentang valuasi/fundamental/profil perusahaan, gunakan get_fundamentals.
 10. Jika pengguna bertanya tentang bandar, broker, asing masuk/keluar, akumulasi/distribusi, gunakan get_broker_summary.
-11. Jika pengguna MEMINTA GAMBAR, CHART, GRAFIK, atau VISUALISASI dari sebuah pergerakan saham, gunakan request_chart.
-12. Jika pengguna ingin menambah, melihat, atau menghapus saham dari watchlist, gunakan tool watchlist yang sesuai. TIDAK perlu mengisi chatId, sistem akan menanganinya otomatis.
-13. Jika pengguna ingin membuat alert:
+11. Jika pengguna bertanya tentang "bandarmologi", "foreign flow", "liquidity flow", "bandar akumulasi", "smart money", "institutional flow", atau aktivitas institusional, gunakan get_market_liquidity_flow.
+12. Jika pengguna MEMINTA GAMBAR, CHART, GRAFIK, atau VISUALISASI dari sebuah pergerakan saham, gunakan request_chart.
+13. Jika pengguna ingin menambah, melihat, atau menghapus saham dari watchlist, gunakan tool watchlist yang sesuai. TIDAK perlu mengisi chatId, sistem akan menanganinya otomatis.
+14. Jika pengguna ingin membuat alert:
     - Alert harga tetap: gunakan targetPrice dan condition
     - Alert persentase ("+5%", "-3%", "naik 5%", "turun 3%"): gunakan percentage dan condition (ABOVE untuk naik, BELOW untuk turun)
     - Trailing stop ("turun X% dari harga tertinggi hari ini", "trailing stop X%", "stop loss dinamis"): gunakan percentage dan isTrailingStop=true
@@ -122,14 +124,14 @@ ATURAN:
     - "alert BBNI turun 5% dari harga tertinggi hari ini" → percentage=5, isTrailingStop=true
     
     Ketika pengguna menyebut "harga tertinggi hari ini", "high hari ini", "trailing stop", atau "stop loss dinamis", gunakan isTrailingStop=true.
-14. Jika pengguna ingin melihat daftar alert yang sudah dibuat, gunakan view_alerts. Tool ini akan menampilkan status detail untuk setiap alert termasuk jarak ke trigger dan kondisi terkini.
-15. Jika pengguna ingin menghapus atau membatalkan alert, gunakan delete_alert.
-16. Jika pengguna ingin mencatat pembelian saham atau menambah portfolio ("beli saham BBRI harga 4200 lot 10", "tambah ASII ke portfolio 5000 5 lot"), gunakan add_to_portfolio. TIDAK perlu mengisi chatId, sistem menanganinya otomatis.
-17. Jika pengguna ingin melihat portfolio investasi mereka ("tampilkan portfolio saya", "lihat portfolio", "cek untung rugi"), gunakan get_portfolio.
-18. Jika pengguna ingin menghapus saham dari portfolio ("hapus BBCA dari portfolio", "remove TLKM"), gunakan remove_from_portfolio.
-19. Jika pengguna bertanya tentang analisis teknikal, RSI, MACD, Moving Average, overbought/oversold, momentum, atau indikator teknikal suatu saham, gunakan get_technical_indicators. Contoh: "RSI BBCA berapa?", "MACD TLKM gimana?", "analisa teknikal BBRI", "saham ASII lagi overbought?"
-20. PENTING - Smart Auto-trigger: Ketika pengguna meminta analisis mendalam/lengkap/komprehensif suatu saham (contoh: "analisa BBCA", "cek TLKM secara detail", "gimana kondisi BBRI sekarang?"), OTOMATIS sertakan get_technical_indicators bersama tool lain (get_stock_price, get_fundamentals) untuk memberikan gambaran investasi yang komprehensif. Jangan hanya pakai satu tool saja.
-21. Kamu memiliki memori percakapan. Gunakan konteks percakapan sebelumnya untuk menjawab pertanyaan follow-up.`;
+15. Jika pengguna ingin melihat daftar alert yang sudah dibuat, gunakan view_alerts. Tool ini akan menampilkan status detail untuk setiap alert termasuk jarak ke trigger dan kondisi terkini.
+16. Jika pengguna ingin menghapus atau membatalkan alert, gunakan delete_alert.
+17. Jika pengguna ingin mencatat pembelian saham atau menambah portfolio ("beli saham BBRI harga 4200 lot 10", "tambah ASII ke portfolio 5000 5 lot"), gunakan add_to_portfolio. TIDAK perlu mengisi chatId, sistem menanganinya otomatis.
+18. Jika pengguna ingin melihat portfolio investasi mereka ("tampilkan portfolio saya", "lihat portfolio", "cek untung rugi"), gunakan get_portfolio.
+19. Jika pengguna ingin menghapus saham dari portfolio ("hapus BBCA dari portfolio", "remove TLKM"), gunakan remove_from_portfolio.
+20. Jika pengguna bertanya tentang analisis teknikal, RSI, MACD, Moving Average, overbought/oversold, momentum, atau indikator teknikal suatu saham, gunakan get_technical_indicators. Contoh: "RSI BBCA berapa?", "MACD TLKM gimana?", "analisa teknikal BBRI", "saham ASII lagi overbought?"
+21. PENTING - Smart Auto-trigger: Ketika pengguna meminta analisis mendalam/lengkap/komprehensif suatu saham (contoh: "analisa BBCA", "cek TLKM secara detail", "gimana kondisi BBRI sekarang?"), OTOMATIS sertakan get_stock_price, get_fundamentals, get_technical_indicators, DAN get_market_liquidity_flow untuk memberikan gambaran investasi yang komprehensif dari segi harga, fundamental, teknikal, DAN institutional flow. Jangan hanya pakai satu atau dua tool saja - ini adalah analisis ULTIMATE.
+22. Kamu memiliki memori percakapan. Gunakan konteks percakapan sebelumnya untuk menjawab pertanyaan follow-up.`;
 };
 
 export const processQuery = async (input: string, chatId: string) => {
