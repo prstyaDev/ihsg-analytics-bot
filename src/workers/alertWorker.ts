@@ -10,6 +10,7 @@ import {
   resetTrailingStopDayHighs
 } from '../db';
 import { isMarketOpen, getMarketStatus } from '../utils/tradingHours';
+import { retryWithBackoff } from '../utils/retry';
 
 // ────────────────────────────────────────────────────────────────────
 // GoAPI Client Configuration
@@ -27,94 +28,292 @@ const api = axios.create({
 // Worker State Management
 // ────────────────────────────────────────────────────────────────────
 let workerInterval: NodeJS.Timeout | null = null;
-const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 let lastResetDate: string | null = null; // Track last reset date (YYYY-MM-DD)
 
 // ────────────────────────────────────────────────────────────────────
-// Send Alert Notification to User via Telegram
+// Format milliseconds to human-readable interval string
 // ────────────────────────────────────────────────────────────────────
-async function sendAlertNotification(
+function formatInterval(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  
+  if (minutes === 0) {
+    return `${seconds} second(s)`;
+  } else if (seconds === 0) {
+    return `${minutes} minute(s)`;
+  } else {
+    return `${minutes} minute(s) ${seconds} second(s)`;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// HTML Notification Formatting Utilities
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Format currency value with Indonesian Rupiah formatting
+ * @param value - Numeric value to format
+ * @returns Formatted string (e.g., "5.600")
+ */
+function formatCurrency(value: number): string {
+  return value.toLocaleString('id-ID');
+}
+
+/**
+ * Format percentage with sign and color indicator
+ * @param value - Percentage value (can be string or number)
+ * @returns Formatted string with emoji indicator
+ */
+function formatPercentage(value: string | number): string {
+  if (value === 'N/A' || value === null || value === undefined) {
+    return 'N/A';
+  }
+  
+  const numValue = typeof value === 'string' ? parseFloat(value) : value;
+  if (isNaN(numValue)) return 'N/A';
+  
+  const emoji = numValue >= 0 ? '🟢' : '🔴';
+  const sign = numValue >= 0 ? '+' : '';
+  return `${emoji} ${sign}${numValue.toFixed(2)}%`;
+}
+
+/**
+ * Get emoji for alert condition
+ * @param condition - 'ABOVE' or 'BELOW'
+ * @returns Appropriate emoji
+ */
+function getConditionEmoji(condition: 'ABOVE' | 'BELOW'): string {
+  return condition === 'ABOVE' ? '🟢' : '🔴';
+}
+
+/**
+ * Get alert type badge with emoji
+ * @param alertType - 'STATIC', 'PERCENTAGE', or 'TRAILING_STOP'
+ * @returns HTML formatted badge
+ */
+function getAlertTypeBadge(alertType: string): string {
+  switch (alertType) {
+    case 'STATIC':
+      return '🎯 <b>PRICE ALERT</b>';
+    case 'PERCENTAGE':
+      return '📊 <b>PERCENTAGE ALERT</b>';
+    case 'TRAILING_STOP':
+      return '🛡️ <b>TRAILING STOP</b>';
+    default:
+      return '🔔 <b>ALERT</b>';
+  }
+}
+
+/**
+ * Format volume with K/M/B suffixes for readability
+ * @param volume - Volume value
+ * @returns Formatted string
+ */
+function formatVolume(volume: number | string): string {
+  if (volume === 'N/A' || volume === null || volume === undefined) {
+    return 'N/A';
+  }
+  
+  const numVolume = typeof volume === 'string' ? parseFloat(volume) : volume;
+  if (isNaN(numVolume)) return 'N/A';
+  
+  if (numVolume >= 1_000_000_000) {
+    return `${(numVolume / 1_000_000_000).toFixed(2)}B`;
+  } else if (numVolume >= 1_000_000) {
+    return `${(numVolume / 1_000_000).toFixed(2)}M`;
+  } else if (numVolume >= 1_000) {
+    return `${(numVolume / 1_000).toFixed(2)}K`;
+  }
+  return numVolume.toLocaleString('id-ID');
+}
+
+/**
+ * Format single alert notification in premium HTML style
+ * Uses Telegram HTML parse mode with monospace tables for alignment
+ * 
+ * @param alert - Alert row from database
+ * @param currentPrice - Current stock price
+ * @param marketData - Market data from GoAPI
+ * @returns HTML formatted notification string
+ */
+function formatSingleAlertHTML(
+  alert: AlertRow,
+  currentPrice: number,
+  marketData: any
+): string {
+  const symbol = alert.symbol.toUpperCase();
+  const conditionEmoji = getConditionEmoji(alert.condition);
+  const alertBadge = getAlertTypeBadge(alert.alert_type);
+  
+  // Extract market data with fallbacks
+  const change = marketData?.change ?? 0;
+  const changePercent = marketData?.change_pct ?? marketData?.changePct ?? 0;
+  const volume = marketData?.volume ?? 'N/A';
+  const open = marketData?.open ?? 'N/A';
+  const high = marketData?.high ?? 'N/A';
+  const low = marketData?.low ?? 'N/A';
+  
+  // Build HTML message
+  let html = `${alertBadge}\n\n`;
+  html += `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  
+  // Stock symbol header
+  html += `📈 <b>${symbol}</b>\n`;
+  html += `💰 <b>Rp ${formatCurrency(currentPrice)}</b> ${formatPercentage(changePercent)}\n\n`;
+  
+  // Alert-specific details
+  switch (alert.alert_type) {
+    case 'STATIC': {
+      const conditionText = alert.condition === 'ABOVE' ? 'naik di atas' : 'turun di bawah';
+      html += `${conditionEmoji} <b>Kondisi:</b> Harga ${conditionText}\n`;
+      html += `🎯 <b>Target:</b> Rp ${formatCurrency(alert.target_price)}\n\n`;
+      break;
+    }
+    
+    case 'PERCENTAGE': {
+      const conditionText = alert.condition === 'ABOVE' ? 'Naik' : 'Turun';
+      const basePrice = alert.base_price || 0;
+      const percentage = alert.percentage || 0;
+      const diff = ((currentPrice - basePrice) / basePrice * 100).toFixed(2);
+      
+      html += `${conditionEmoji} <b>Kondisi:</b> ${conditionText} ${percentage}%\n`;
+      html += `📍 <b>Harga Base:</b> Rp ${formatCurrency(basePrice)}\n`;
+      html += `🎯 <b>Target:</b> Rp ${formatCurrency(alert.target_price)}\n`;
+      html += `📊 <b>Perubahan:</b> ${diff}%\n\n`;
+      break;
+    }
+    
+    case 'TRAILING_STOP': {
+      const dayHigh = alert.day_high_price || 0;
+      const percentage = alert.percentage || 0;
+      const threshold = dayHigh * (1 - percentage / 100);
+      const dropPercent = ((dayHigh - currentPrice) / dayHigh * 100).toFixed(2);
+      
+      html += `🔴 <b>Kondisi:</b> Turun ${percentage}% dari high\n`;
+      html += `🏔️ <b>Day High:</b> Rp ${formatCurrency(dayHigh)}\n`;
+      html += `🎯 <b>Threshold:</b> Rp ${formatCurrency(threshold)}\n`;
+      html += `📉 <b>Drop:</b> ${dropPercent}%\n\n`;
+      break;
+    }
+  }
+  
+  // Market data table using monospace
+  html += `<b>📊 DATA PASAR</b>\n`;
+  html += `<pre>`;
+  html += `Open     : Rp ${typeof open === 'number' ? formatCurrency(open) : open}\n`;
+  html += `High     : Rp ${typeof high === 'number' ? formatCurrency(high) : high}\n`;
+  html += `Low      : Rp ${typeof low === 'number' ? formatCurrency(low) : low}\n`;
+  html += `Perubahan: ${change >= 0 ? '+' : ''}${change} (${typeof changePercent === 'number' ? changePercent.toFixed(2) : changePercent}%)\n`;
+  html += `Volume   : ${formatVolume(volume)}`;
+  html += `</pre>\n\n`;
+  
+  // Footer
+  html += `━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  html += `✅ <i>Alert ini telah dinonaktifkan</i>`;
+  
+  return html;
+}
+
+/**
+ * Format batch alerts notification in compact HTML style
+ * Groups multiple alerts for a single user into one message
+ * 
+ * @param alerts - Array of triggered alerts with price and market data
+ * @param chatId - User's chat ID (for logging/debugging)
+ * @returns HTML formatted batch notification string
+ */
+function formatBatchAlertsHTML(
+  alerts: Array<{ alert: AlertRow; price: number; data: any }>,
+  chatId: string
+): string {
+  const alertCount = alerts.length;
+  
+  // Header
+  let html = `🔔 <b>BATCH ALERT TRIGGERED</b>\n\n`;
+  html += `Anda memiliki <b>${alertCount} alert</b> yang terpicu!\n\n`;
+  html += `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  
+  // Process each alert (compact format)
+  alerts.forEach((item, index) => {
+    const { alert, price, data } = item;
+    const symbol = alert.symbol.toUpperCase();
+    const conditionEmoji = getConditionEmoji(alert.condition);
+    const changePercent = data?.change_pct ?? data?.changePct ?? 0;
+    
+    // Alert header with emoji and type
+    html += `${index + 1}. ${conditionEmoji} <b>${symbol}</b>`;
+    
+    // Alert type badge (compact)
+    if (alert.alert_type === 'PERCENTAGE') {
+      html += ` 📊`;
+    } else if (alert.alert_type === 'TRAILING_STOP') {
+      html += ` 🛡️`;
+    }
+    
+    html += `\n`;
+    
+    // Price and condition (compact single line)
+    html += `   💰 Rp ${formatCurrency(price)} ${formatPercentage(changePercent)}\n`;
+    
+    // Condition details (compact)
+    if (alert.alert_type === 'STATIC') {
+      const condition = alert.condition === 'ABOVE' ? 'di atas' : 'di bawah';
+      html += `   🎯 Target ${condition} Rp ${formatCurrency(alert.target_price)}\n`;
+    } else if (alert.alert_type === 'PERCENTAGE') {
+      const percentage = alert.percentage || 0;
+      const condition = alert.condition === 'ABOVE' ? '+' : '-';
+      html += `   📊 ${condition}${percentage}% dari Rp ${formatCurrency(alert.base_price || 0)}\n`;
+    } else if (alert.alert_type === 'TRAILING_STOP') {
+      const percentage = alert.percentage || 0;
+      html += `   🛡️ Drop ${percentage}% dari high Rp ${formatCurrency(alert.day_high_price || 0)}\n`;
+    }
+    
+    // Spacing between alerts
+    if (index < alertCount - 1) {
+      html += `\n`;
+    }
+  });
+  
+  // Summary footer
+  html += `\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  
+  // Summary statistics
+  const totalValue = alerts.reduce((sum, item) => sum + item.price, 0);
+  const avgPrice = totalValue / alertCount;
+  
+  html += `<b>📈 RINGKASAN</b>\n`;
+  html += `<code>`;
+  html += `Total Alert  : ${alertCount}\n`;
+  html += `Rata-rata    : Rp ${formatCurrency(Math.round(avgPrice))}\n`;
+  html += `Status       : Semua dinonaktifkan`;
+  html += `</code>\n\n`;
+  
+  html += `✅ <i>Semua alert telah dinonaktifkan</i>`;
+  
+  return html;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Send Single Alert Notification (HTML Format)
+// ────────────────────────────────────────────────────────────────────
+async function sendSingleAlertNotification(
   alert: AlertRow,
   currentPrice: number,
   marketData: any
 ): Promise<boolean> {
   try {
     const symbol = alert.symbol.toUpperCase();
-    const changePercent = marketData?.change_pct || marketData?.changePct || 'N/A';
-    const volume = marketData?.volume || 'N/A';
-    const change = marketData?.change || 'N/A';
-    
-    let message = '';
-
-    // Format message based on alert type
-    switch (alert.alert_type) {
-      case 'STATIC': {
-        const condition = alert.condition === 'ABOVE' ? 'naik di atas' : 'turun di bawah';
-        message = `🔔 *Alert Triggered!*\n\n` +
-          `📈 *Saham:* ${symbol}\n` +
-          `💰 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n` +
-          `🎯 *Target Anda:* ${condition} Rp ${alert.target_price.toLocaleString('id-ID')}\n\n` +
-          `📊 *Data Pasar:*\n` +
-          `• Perubahan: ${change} (${changePercent}%)\n` +
-          `• Volume: ${volume}\n\n` +
-          `✅ Alert ini telah dinonaktifkan.`;
-        break;
-      }
-
-      case 'PERCENTAGE': {
-        const condition = alert.condition === 'ABOVE' ? 'naik' : 'turun';
-        const basePrice = alert.base_price || 0;
-        const percentage = alert.percentage || 0;
-        message = `🔔 *Alert Persentase Triggered!*\n\n` +
-          `📈 *Saham:* ${symbol}\n` +
-          `📊 *Kondisi:* ${condition.charAt(0).toUpperCase() + condition.slice(1)} ${percentage}% dari harga base\n` +
-          `💰 *Harga Base:* Rp ${basePrice.toLocaleString('id-ID')} (saat dibuat)\n` +
-          `🎯 *Target:* Rp ${alert.target_price.toLocaleString('id-ID')}\n` +
-          `💹 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n\n` +
-          `📊 *Data Pasar:*\n` +
-          `• Perubahan: ${change} (${changePercent}%)\n` +
-          `• Volume: ${volume}\n\n` +
-          `✅ Alert ini telah dinonaktifkan.`;
-        break;
-      }
-
-      case 'TRAILING_STOP': {
-        const dayHigh = alert.day_high_price || 0;
-        const percentage = alert.percentage || 0;
-        const threshold = dayHigh * (1 - percentage / 100);
-        message = `🔔 *Trailing Stop Alert Triggered!*\n\n` +
-          `📈 *Saham:* ${symbol}\n` +
-          `📉 *Kondisi:* Turun ${percentage}% dari harga tertinggi hari ini\n` +
-          `🏔️ *Harga Tertinggi Hari Ini:* Rp ${dayHigh.toLocaleString('id-ID')}\n` +
-          `🎯 *Threshold:* Rp ${threshold.toLocaleString('id-ID')}\n` +
-          `💹 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n\n` +
-          `📊 *Data Pasar:*\n` +
-          `• Perubahan: ${change} (${changePercent}%)\n` +
-          `• Volume: ${volume}\n\n` +
-          `✅ Alert ini telah dinonaktifkan.`;
-        break;
-      }
-
-      default: {
-        // Fallback to static message
-        const condition = alert.condition === 'ABOVE' ? 'naik di atas' : 'turun di bawah';
-        message = `🔔 *Alert Triggered!*\n\n` +
-          `📈 *Saham:* ${symbol}\n` +
-          `💰 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n` +
-          `🎯 *Target Anda:* ${condition} Rp ${alert.target_price.toLocaleString('id-ID')}\n\n` +
-          `✅ Alert ini telah dinonaktifkan.`;
-        break;
-      }
-    }
+    const message = formatSingleAlertHTML(alert, currentPrice, marketData);
     
     await bot.telegram.sendMessage(alert.chat_id, message, { 
-      parse_mode: 'Markdown' 
+      parse_mode: 'HTML' 
     });
     
-    console.log(`[AlertWorker] ✅ Notification sent to chat ${alert.chat_id} for ${symbol} (${alert.alert_type})`);
+    console.log(`[AlertWorker] ✅ Single alert notification sent to chat ${alert.chat_id} for ${symbol} (${alert.alert_type})`);
     return true;
   } catch (err: any) {
-    // Handle common errors (user blocked bot, chat not found, etc.)
+    // Handle common Telegram errors
     if (err?.response?.error_code === 403) {
       console.warn(`[AlertWorker] ⚠️  User ${alert.chat_id} blocked the bot. Skipping notification.`);
     } else if (err?.response?.error_code === 400) {
@@ -127,25 +326,82 @@ async function sendAlertNotification(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Fetch Stock Price from GoAPI
+// Send Batch Alert Notification (HTML Format)
+// ────────────────────────────────────────────────────────────────────
+async function sendBatchAlertNotification(
+  alerts: Array<{ alert: AlertRow; price: number; data: any }>,
+  chatId: string
+): Promise<boolean> {
+  try {
+    const message = formatBatchAlertsHTML(alerts, chatId);
+    
+    await bot.telegram.sendMessage(chatId, message, { 
+      parse_mode: 'HTML' 
+    });
+    
+    const symbols = alerts.map(item => item.alert.symbol).join(', ');
+    console.log(`[AlertWorker] ✅ Batch notification sent to chat ${chatId} for ${alerts.length} alerts (${symbols})`);
+    return true;
+  } catch (err: any) {
+    // Handle common Telegram errors
+    if (err?.response?.error_code === 403) {
+      console.warn(`[AlertWorker] ⚠️  User ${chatId} blocked the bot. Skipping notification.`);
+    } else if (err?.response?.error_code === 400) {
+      console.warn(`[AlertWorker] ⚠️  Invalid chat_id ${chatId}. Skipping notification.`);
+    } else {
+      console.error(`[AlertWorker] ❌ Failed to send batch notification to ${chatId}:`, err?.message);
+    }
+    return false;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Fetch Stock Price from GoAPI with Exponential Backoff Retry
 // ────────────────────────────────────────────────────────────────────
 async function fetchStockPrice(symbol: string): Promise<{ price: number; data: any } | null> {
   try {
-    const { data } = await api.get('/stock/idx/prices', {
-      params: { symbols: symbol.toUpperCase() }
-    });
+    // Wrap GoAPI call with exponential backoff retry (3 retries, 1s → 2s → 4s)
+    const result = await retryWithBackoff(
+      async () => {
+        const { data } = await api.get('/stock/idx/prices', {
+          params: { symbols: symbol.toUpperCase() }
+        });
+        
+        const result = data?.data?.results?.[0] || data?.data || data;
+        const price = result?.close ?? result?.price ?? null;
+        
+        // Throw error if no price data found (will trigger retry)
+        if (price === null || price === undefined) {
+          throw new Error(`No price data found for ${symbol}`);
+        }
+        
+        return { price: Number(price), data: result };
+      },
+      {
+        maxRetries: 3,
+        baseDelay: 1000,
+        operationName: `GoAPI price fetch for ${symbol}`
+      }
+    );
     
-    const result = data?.data?.results?.[0] || data?.data || data;
-    const price = result?.close ?? result?.price ?? null;
+    return result;
     
-    if (price === null || price === undefined) {
-      console.warn(`[AlertWorker] ⚠️  No price data found for ${symbol}`);
-      return null;
+  } catch (err: any) {
+    // All retries exhausted or unrecoverable error
+    const errorMsg = err?.message || 'Unknown error';
+    
+    // Distinguish between retry exhaustion and immediate failures
+    if (errorMsg.includes('after') && errorMsg.includes('attempts')) {
+      console.error(
+        `[AlertWorker] ❌ Failed to fetch price for ${symbol} after exhausting retries. ` +
+        `Skipping this symbol.`
+      );
+    } else {
+      console.error(
+        `[AlertWorker] ❌ Failed to fetch price for ${symbol}: ${errorMsg}`
+      );
     }
     
-    return { price: Number(price), data: result };
-  } catch (err: any) {
-    console.error(`[AlertWorker] ❌ Failed to fetch price for ${symbol}:`, err?.message);
     return null;
   }
 }
@@ -305,10 +561,12 @@ export async function checkAlerts(): Promise<void> {
     
     console.log(`[AlertWorker] 📋 Found ${alertsMap.size} unique symbols with active alerts`);
     
-    // Step 3: Process each symbol's alerts
-    let triggeredCount = 0;
+    // Step 3: Accumulator for triggered alerts grouped by chat_id
+    const triggeredAlertsByUser = new Map<string, Array<{ alert: AlertRow; price: number; data: any }>>();
+    
     let checkedCount = 0;
     
+    // Step 4: Process each symbol's alerts (accumulate, don't send yet)
     for (const [symbol, alerts] of alertsMap.entries()) {
       try {
         console.log(`[AlertWorker] 🔎 Checking ${alerts.length} alert(s) for ${symbol}...`);
@@ -324,10 +582,10 @@ export async function checkAlerts(): Promise<void> {
         const { price, data: marketData } = priceData;
         console.log(`[AlertWorker] 💹 ${symbol} current price: ${price}`);
         
-        // Step 4: Update trailing stop day highs for this symbol
+        // Update trailing stop day highs for this symbol
         await updateTrailingStopDayHighs(symbol, price);
         
-        // Step 5: Check each alert for this symbol
+        // Check each alert for this symbol
         for (const alert of alerts) {
           checkedCount++;
           
@@ -340,18 +598,16 @@ export async function checkAlerts(): Promise<void> {
               `(current: ${price})`
             );
             
-            // Send notification to user
-            const notificationSent = await sendAlertNotification(alert, price, marketData);
-            
-            // Deactivate alert regardless of notification success
-            const { error: deactivateError } = await deactivateAlert(alert.id);
-            
-            if (deactivateError) {
-              console.error(`[AlertWorker] ❌ Failed to deactivate alert ${alert.id}:`, deactivateError);
-            } else {
-              triggeredCount++;
-              console.log(`[AlertWorker] ✅ Alert ${alert.id} deactivated successfully`);
+            // Accumulate triggered alert by chat_id
+            const chatId = alert.chat_id;
+            if (!triggeredAlertsByUser.has(chatId)) {
+              triggeredAlertsByUser.set(chatId, []);
             }
+            triggeredAlertsByUser.get(chatId)!.push({
+              alert,
+              price,
+              data: marketData
+            });
           }
         }
         
@@ -365,9 +621,58 @@ export async function checkAlerts(): Promise<void> {
       }
     }
     
+    // Step 5: Send batch notifications and deactivate alerts
+    let notificationsSent = 0;
+    let alertsDeactivated = 0;
+    
+    if (triggeredAlertsByUser.size > 0) {
+      console.log(`[AlertWorker] 📨 Processing notifications for ${triggeredAlertsByUser.size} user(s)...`);
+      
+      for (const [chatId, alertItems] of triggeredAlertsByUser.entries()) {
+        const alertCount = alertItems.length;
+        let notificationSuccess = false;
+        
+        try {
+          if (alertCount === 1) {
+            // Single alert - use single template
+            const { alert, price, data } = alertItems[0];
+            console.log(`[AlertWorker] 📤 Sending single alert notification to ${chatId} for ${alert.symbol}`);
+            notificationSuccess = await sendSingleAlertNotification(alert, price, data);
+          } else {
+            // Multiple alerts - use batch template
+            console.log(`[AlertWorker] 📤 Sending batch notification to ${chatId} for ${alertCount} alerts`);
+            notificationSuccess = await sendBatchAlertNotification(alertItems, chatId);
+          }
+          
+          if (notificationSuccess) {
+            notificationsSent++;
+          }
+          
+        } catch (notifErr: any) {
+          console.error(`[AlertWorker] ❌ Error sending notification to ${chatId}:`, notifErr?.message);
+        }
+        
+        // Deactivate all alerts for this user (regardless of notification success)
+        for (const { alert } of alertItems) {
+          try {
+            const { error: deactivateError } = await deactivateAlert(alert.id);
+            
+            if (deactivateError) {
+              console.error(`[AlertWorker] ❌ Failed to deactivate alert ${alert.id}:`, deactivateError);
+            } else {
+              alertsDeactivated++;
+              console.log(`[AlertWorker] ✅ Alert ${alert.id} (${alert.symbol}) deactivated`);
+            }
+          } catch (deactivateErr: any) {
+            console.error(`[AlertWorker] ❌ Exception deactivating alert ${alert.id}:`, deactivateErr?.message);
+          }
+        }
+      }
+    }
+    
     console.log(
       `[AlertWorker] ✅ Alert check cycle completed. ` +
-      `Checked: ${checkedCount}, Triggered: ${triggeredCount}`
+      `Checked: ${checkedCount}, Triggered: ${alertsDeactivated}, Notifications: ${notificationsSent}`
     );
     
   } catch (err: any) {
@@ -380,8 +685,11 @@ export async function checkAlerts(): Promise<void> {
 // Start Alert Worker with Trading Hours Scheduler
 // ────────────────────────────────────────────────────────────────────
 export function startAlertWorker(): void {
+  const intervalMs = env.ALERT_CHECK_INTERVAL_MS;
+  const intervalFormatted = formatInterval(intervalMs);
+  
   console.log('[AlertWorker] 🚀 Initializing alert worker...');
-  console.log(`[AlertWorker] ⏰ Check interval: ${CHECK_INTERVAL_MS / 1000 / 60} minutes`);
+  console.log(`[AlertWorker] ⏰ Check interval: ${intervalFormatted}`);
   console.log('[AlertWorker] 🕒 Trading hours: Mon-Fri 09:00-16:00 WIB');
   
   // Initial market status check
@@ -398,7 +706,7 @@ export function startAlertWorker(): void {
     console.log('[AlertWorker] 🔒 Market is closed - waiting for next cycle...');
   }
   
-  // Set up periodic checks
+  // Set up periodic checks using configurable interval
   workerInterval = setInterval(() => {
     const marketStatus = getMarketStatus();
     
@@ -410,9 +718,9 @@ export function startAlertWorker(): void {
     } else {
       console.log(`[AlertWorker] 🔒 Market is closed (${marketStatus}) - skipping check`);
     }
-  }, CHECK_INTERVAL_MS);
+  }, intervalMs);
   
-  console.log('[AlertWorker] ✅ Worker started successfully');
+  console.log(`[AlertWorker] ✅ Worker started successfully. Running check cycles every ${intervalFormatted}...`);
 }
 
 // ────────────────────────────────────────────────────────────────────
