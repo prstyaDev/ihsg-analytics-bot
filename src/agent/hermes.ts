@@ -86,6 +86,9 @@ TOOLS YANG TERSEDIA:
 12. create_alert — Buat alert harga otomatis untuk notifikasi (parameter: symbol, targetPrice, condition: 'ABOVE'|'BELOW')
 13. view_alerts — Lihat semua alert aktif pengguna (tanpa parameter)
 14. delete_alert — Hapus alert untuk saham tertentu (parameter: symbol)
+15. add_to_portfolio — Tambahkan saham ke portfolio investasi dengan harga rata-rata dan jumlah lot (parameter: symbol, averagePrice, totalLot). Sistem otomatis menghitung harga rata-rata tertimbang jika saham sudah ada.
+16. get_portfolio — Tampilkan daftar portfolio lengkap dengan perhitungan profit/loss real-time, nilai pasar, modal, dan persentase keuntungan/kerugian (tanpa parameter)
+17. remove_from_portfolio — Hapus saham dari portfolio investasi (parameter: symbol saja)
 
 ATURAN:
 1. Pilih tool yang paling relevan berdasarkan pertanyaan pengguna. Boleh memanggil lebih dari satu tool jika diperlukan.
@@ -103,7 +106,10 @@ ATURAN:
 13. Jika pengguna ingin membuat alert harga ("beri tahu saya jika...", "alert jika...", "notif kalau..."), gunakan create_alert dengan parameter yang sesuai. Alert akan mengirim notifikasi otomatis selama jam trading (Senin-Jumat 09:00-16:00 WIB).
 14. Jika pengguna ingin melihat daftar alert yang sudah dibuat, gunakan view_alerts.
 15. Jika pengguna ingin menghapus atau membatalkan alert, gunakan delete_alert.
-16. Kamu memiliki memori percakapan. Gunakan konteks percakapan sebelumnya untuk menjawab pertanyaan follow-up.`;
+16. Jika pengguna ingin mencatat pembelian saham atau menambah portfolio ("beli saham BBRI harga 4200 lot 10", "tambah ASII ke portfolio 5000 5 lot"), gunakan add_to_portfolio. TIDAK perlu mengisi chatId, sistem menanganinya otomatis.
+17. Jika pengguna ingin melihat portfolio investasi mereka ("tampilkan portfolio saya", "lihat portfolio", "cek untung rugi"), gunakan get_portfolio.
+18. Jika pengguna ingin menghapus saham dari portfolio ("hapus BBCA dari portfolio", "remove TLKM"), gunakan remove_from_portfolio.
+19. Kamu memiliki memori percakapan. Gunakan konteks percakapan sebelumnya untuk menjawab pertanyaan follow-up.`;
 };
 
 export const processQuery = async (input: string, chatId: string) => {

@@ -265,3 +265,92 @@ export async function getActiveAlertsGroupedBySymbol() {
     return { data: null, error: err };
   }
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Portfolio Accessor Functions
+// ────────────────────────────────────────────────────────────────────
+export async function checkPortfolioExists(chatId: string, symbol: string) {
+  const { data, error } = await supabase
+    .from('portfolio')
+    .select('*')
+    .eq('chat_id', chatId)
+    .eq('symbol', symbol)
+    .maybeSingle();
+  
+  if (error) {
+    console.error('[DB] checkPortfolioExists error:', error.message);
+  }
+  
+  return { data, error };
+}
+
+export async function addToPortfolio(chatId: string, symbol: string, averagePrice: number, totalLot: number) {
+  const { data, error } = await supabase
+    .from('portfolio')
+    .insert({ 
+      chat_id: chatId, 
+      symbol, 
+      average_price: averagePrice, 
+      total_lot: totalLot 
+    })
+    .select();
+  
+  if (error) {
+    console.error('[DB] addToPortfolio error:', error.message);
+  } else {
+    console.log(`[DB] Portfolio added: ${symbol} for chat ${chatId}`);
+  }
+  
+  return { data, error };
+}
+
+export async function updatePortfolio(chatId: string, symbol: string, newAvgPrice: number, newTotalLot: number) {
+  const { data, error } = await supabase
+    .from('portfolio')
+    .update({ 
+      average_price: newAvgPrice, 
+      total_lot: newTotalLot 
+    })
+    .eq('chat_id', chatId)
+    .eq('symbol', symbol)
+    .select();
+  
+  if (error) {
+    console.error('[DB] updatePortfolio error:', error.message);
+  } else {
+    console.log(`[DB] Portfolio updated: ${symbol} for chat ${chatId}`);
+  }
+  
+  return { data, error };
+}
+
+export async function getPortfolio(chatId: string) {
+  const { data, error } = await supabase
+    .from('portfolio')
+    .select('*')
+    .eq('chat_id', chatId)
+    .order('symbol', { ascending: true });
+  
+  if (error) {
+    console.error('[DB] getPortfolio error:', error.message);
+  }
+  
+  return { data: data as PortfolioRow[] | null, error };
+}
+
+export async function removeFromPortfolio(chatId: string, symbol: string) {
+  const { data, error } = await supabase
+    .from('portfolio')
+    .delete()
+    .eq('chat_id', chatId)
+    .eq('symbol', symbol)
+    .select();
+  
+  if (error) {
+    console.error('[DB] removeFromPortfolio error:', error.message);
+  } else if (data && data.length > 0) {
+    console.log(`[DB] Portfolio removed: ${symbol} for chat ${chatId}`);
+  }
+  
+  return { data, error };
+}

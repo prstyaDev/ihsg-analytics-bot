@@ -3,7 +3,17 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import NodeCache from 'node-cache';
 import { env } from '../config/env';
-import { checkWatchlistExists, addToWatchlist, getWatchlist, removeFromWatchlist } from '../db';
+import { 
+  checkWatchlistExists, 
+  addToWatchlist, 
+  getWatchlist, 
+  removeFromWatchlist,
+  checkPortfolioExists,
+  addToPortfolio,
+  updatePortfolio,
+  getPortfolio,
+  removeFromPortfolio
+} from '../db';
 
 const api = axios.create({
   baseURL: 'https://api.goapi.io',
@@ -595,6 +605,262 @@ export function createAlertTools(chatId: string) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
+// PORTFOLIO TOOLS — Factory function (chatId di-inject otomatis, bukan dari AI)
+// ────────────────────────────────────────────────────────────────────────────────
+export function createPortfolioTools(chatId: string) {
+  const chatIdStr = String(chatId);
+
+  const addToPortfolioTool = tool({
+    description:
+      'Menambahkan saham ke portfolio investasi pengguna dengan harga rata-rata dan jumlah lot. ' +
+      'Jika saham sudah ada, sistem akan menghitung ulang harga rata-rata tertimbang secara otomatis. ' +
+      'Gunakan tool ini ketika pengguna ingin mencatat pembelian saham atau menambah posisi. ' +
+      'Contoh: "saya beli BBCA di harga 10000 sebanyak 5 lot", "tambah BBRI ke portfolio harga 4500 lot 10", "catat pembelian TLKM 3000 20 lot".',
+    inputSchema: z.object({
+      symbol: z
+        .string()
+        .describe('Kode emiten saham 4 huruf di BEI, contoh: BBCA'),
+      averagePrice: z
+        .number()
+        .positive()
+        .describe('Harga rata-rata pembelian per saham dalam Rupiah'),
+      totalLot: z
+        .number()
+        .positive()
+        .int()
+        .describe('Jumlah lot yang dibeli (1 lot = 100 saham)')
+    }),
+    execute: async ({ symbol, averagePrice, totalLot }) => {
+      try {
+        const sym = symbol.toUpperCase().trim();
+
+        // Validate input
+        if (averagePrice <= 0) {
+          return '[SYSTEM ERROR] Harga rata-rata harus lebih besar dari 0.';
+        }
+        if (totalLot < 1) {
+          return '[SYSTEM ERROR] Jumlah lot minimal adalah 1.';
+        }
+
+        // Symbol validation via GoAPI
+        console.log(`[Portfolio] Validating symbol ${sym} via GoAPI...`);
+        try {
+          const { data } = await api.get('/stock/idx/prices', {
+            params: { symbols: sym }
+          });
+          const result = data?.data?.results?.[0] || data?.data || data;
+          const price = result?.close ?? result?.price ?? null;
+
+          if (price === null || price === undefined) {
+            console.warn(`[Portfolio] Symbol ${sym} not found in GoAPI`);
+            return `[SYSTEM ERROR] Simbol ${sym} tidak ditemukan di database GoAPI. Pastikan kode saham sudah benar.`;
+          }
+          console.log(`[Portfolio] Symbol ${sym} validated successfully (current price: ${price})`);
+        } catch (validationErr: any) {
+          console.error('[Portfolio] GoAPI validation error:', validationErr?.message);
+          return `[SYSTEM ERROR] Simbol ${sym} tidak ditemukan di database GoAPI. Pastikan kode saham sudah benar.`;
+        }
+
+        // Check if portfolio entry exists
+        const { data: existing, error: checkError } = await checkPortfolioExists(chatIdStr, sym);
+
+        if (checkError) {
+          console.error('[Portfolio] checkPortfolioExists error:', checkError.message);
+          return '[SYSTEM ERROR] Gagal memeriksa portfolio. Silakan coba lagi.';
+        }
+
+        if (existing) {
+          // Update existing holding with weighted average
+          const oldAvgPrice = Number(existing.average_price);
+          const oldLot = Number(existing.total_lot);
+
+          // Calculate weighted average
+          const newAvgPrice = ((oldAvgPrice * oldLot) + (averagePrice * totalLot)) / (oldLot + totalLot);
+          const newTotalLot = oldLot + totalLot;
+
+          // Round to 2 decimals for display but keep precision in DB
+          const roundedAvgPrice = Math.round(newAvgPrice * 100) / 100;
+
+          const { error: updateError } = await updatePortfolio(chatIdStr, sym, roundedAvgPrice, newTotalLot);
+
+          if (updateError) {
+            console.error('[Portfolio] updatePortfolio error:', updateError.message);
+            return '[SYSTEM ERROR] Gagal memperbarui portfolio.';
+          }
+
+          console.log(`[Portfolio] Updated ${sym} for chat ${chatId}: ${oldAvgPrice} → ${roundedAvgPrice}, ${oldLot} → ${newTotalLot} lots`);
+          
+          return (
+            `[SYSTEM] ✅ Portfolio berhasil diperbarui!\n` +
+            `📊 Saham: ${sym}\n` +
+            `💰 Harga Rata-rata: Rp ${oldAvgPrice.toLocaleString('id-ID')} → Rp ${roundedAvgPrice.toLocaleString('id-ID')}\n` +
+            `📦 Total Lot: ${oldLot} → ${newTotalLot} lot (${newTotalLot * 100} saham)`
+          );
+        } else {
+          // Add new holding
+          const { error: addError } = await addToPortfolio(chatIdStr, sym, averagePrice, totalLot);
+
+          if (addError) {
+            console.error('[Portfolio] addToPortfolio error:', addError.message);
+            return '[SYSTEM ERROR] Gagal menambahkan saham ke portfolio.';
+          }
+
+          console.log(`[Portfolio] Added ${sym} for chat ${chatId}: ${averagePrice} x ${totalLot} lots`);
+
+          return (
+            `[SYSTEM] ✅ Saham berhasil ditambahkan ke portfolio!\n` +
+            `📊 Saham: ${sym}\n` +
+            `💰 Harga Rata-rata: Rp ${averagePrice.toLocaleString('id-ID')}\n` +
+            `📦 Total Lot: ${totalLot} lot (${totalLot * 100} saham)`
+          );
+        }
+      } catch (err: any) {
+        console.error('[Portfolio] add_to_portfolio error:', err?.message);
+        return '[SYSTEM ERROR] Gagal menambahkan saham ke portfolio.';
+      }
+    }
+  });
+
+  const getPortfolioTool = tool({
+    description:
+      'Menampilkan daftar lengkap portfolio investasi pengguna dengan perhitungan profit/loss real-time. ' +
+      'Menampilkan harga rata-rata pembelian, harga pasar terkini, nilai pasar, modal, floating P/L, dan persentase keuntungan/kerugian. ' +
+      'Gunakan tool ini ketika pengguna ingin melihat portfolio atau performa investasi mereka. ' +
+      'Contoh: "tampilkan portfolio saya", "lihat portfolio", "cek untung rugi saham saya", "portfolio performance".',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const { data: holdings, error } = await getPortfolio(chatIdStr);
+
+        if (error) {
+          console.error('[Portfolio] getPortfolio error:', error.message);
+          return '[SYSTEM ERROR] Gagal mengambil data portfolio.';
+        }
+
+        if (!holdings || holdings.length === 0) {
+          return '[SYSTEM] Portfolio Anda masih kosong. Tambahkan saham dengan perintah seperti: "beli BBCA harga 10000 lot 5".';
+        }
+
+        console.log(`[Portfolio] Fetched ${holdings.length} holding(s) for chat ${chatId}`);
+
+        // Extract all symbols for batch price fetch
+        const symbols = holdings.map(h => h.symbol.toUpperCase());
+        const symbolsParam = symbols.join(',');
+
+        // Batch fetch current prices from GoAPI
+        const priceMap = new Map<string, number>();
+        
+        try {
+          console.log(`[Portfolio] Fetching prices for: ${symbolsParam}`);
+          const { data } = await api.get('/stock/idx/prices', {
+            params: { symbols: symbolsParam }
+          });
+
+          const results = data?.data?.results || [];
+          
+          if (Array.isArray(results)) {
+            results.forEach((result: any) => {
+              const sym = result?.symbol?.toUpperCase();
+              const price = result?.close ?? result?.price ?? null;
+              if (sym && price !== null && price !== undefined) {
+                priceMap.set(sym, Number(price));
+              }
+            });
+          }
+          
+          console.log(`[Portfolio] Retrieved prices for ${priceMap.size} symbol(s)`);
+        } catch (priceErr: any) {
+          console.error('[Portfolio] Error fetching prices:', priceErr?.message);
+          // Continue with empty price map - graceful degradation
+        }
+
+        // Build portfolio display
+        let output = `[SYSTEM DATA - PORTFOLIO] Portfolio Investasi Anda (${holdings.length} saham):\n\n`;
+
+        holdings.forEach((holding) => {
+          const sym = holding.symbol.toUpperCase();
+          const avgPrice = Number(holding.average_price);
+          const totalLot = Number(holding.total_lot);
+          const lotValue = 100; // shares per lot
+
+          const currentPrice = priceMap.get(sym);
+
+          output += `📈 ${sym}\n`;
+          output += `• Harga Rata-rata: Rp ${avgPrice.toLocaleString('id-ID')}\n`;
+          output += `• Total Lot: ${totalLot} lot (${totalLot * lotValue} saham)\n`;
+
+          if (currentPrice === null || currentPrice === undefined) {
+            output += `• Harga Sekarang: Data tidak tersedia\n`;
+            output += `• Nilai Pasar: Data tidak tersedia\n`;
+            output += `• Modal: Rp ${(avgPrice * totalLot * lotValue).toLocaleString('id-ID')}\n`;
+            output += `• Floating P/L: Data tidak tersedia\n`;
+            output += `• Gain/Loss: Data tidak tersedia\n\n`;
+          } else {
+            const marketValue = currentPrice * totalLot * lotValue;
+            const costBasis = avgPrice * totalLot * lotValue;
+            const floatingPL = marketValue - costBasis;
+            const gainLossPercent = (floatingPL / costBasis) * 100;
+
+            output += `• Harga Sekarang: Rp ${currentPrice.toLocaleString('id-ID')}\n`;
+            output += `• Nilai Pasar: Rp ${marketValue.toLocaleString('id-ID')}\n`;
+            output += `• Modal: Rp ${costBasis.toLocaleString('id-ID')}\n`;
+            output += `• Floating P/L: Rp ${floatingPL.toLocaleString('id-ID')}\n`;
+            output += `• Gain/Loss: ${gainLossPercent.toFixed(2)}%\n\n`;
+          }
+        });
+
+        output += 'Berikan analisis performa portfolio berdasarkan data di atas.';
+
+        return output;
+      } catch (err: any) {
+        console.error('[Portfolio] get_portfolio error:', err?.message);
+        return '[SYSTEM ERROR] Gagal mengambil data portfolio.';
+      }
+    }
+  });
+
+  const removeFromPortfolioTool = tool({
+    description:
+      'Menghapus saham dari portfolio investasi pengguna. ' +
+      'Gunakan tool ini ketika pengguna ingin mengeluarkan saham dari daftar portfolio (misalnya setelah dijual). ' +
+      'Contoh: "hapus BBCA dari portfolio", "remove TLKM dari portfolio saya", "keluarkan BBRI".',
+    inputSchema: z.object({
+      symbol: z
+        .string()
+        .describe('Kode emiten saham 4 huruf yang ingin dihapus, contoh: BBCA')
+    }),
+    execute: async ({ symbol }) => {
+      try {
+        const sym = symbol.toUpperCase().trim();
+
+        const { data, error } = await removeFromPortfolio(chatIdStr, sym);
+
+        if (error) {
+          console.error('[Portfolio] removeFromPortfolio error:', error.message);
+          return '[SYSTEM ERROR] Gagal menghapus saham dari portfolio.';
+        }
+
+        if (data && data.length > 0) {
+          console.log(`[Portfolio] Removed ${sym} for chat ${chatId}`);
+          return `[SYSTEM] ✅ Saham ${sym} berhasil dihapus dari portfolio Anda.`;
+        } else {
+          return `[SYSTEM] ⚠️  Saham ${sym} tidak ditemukan di portfolio Anda.`;
+        }
+      } catch (err: any) {
+        console.error('[Portfolio] remove_from_portfolio error:', err?.message);
+        return '[SYSTEM ERROR] Gagal menghapus saham dari portfolio.';
+      }
+    }
+  });
+
+  return {
+    add_to_portfolio: addToPortfolioTool,
+    get_portfolio: getPortfolioTool,
+    remove_from_portfolio: removeFromPortfolioTool
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
 // TOOLS REGISTRY
 // ────────────────────────────────────────────────────────────────────────────────
 const baseTools = {
@@ -612,7 +878,8 @@ export function createAllTools(chatId: string) {
   return {
     ...baseTools,
     ...createWatchlistTools(chatId),
-    ...createAlertTools(chatId)
+    ...createAlertTools(chatId),
+    ...createPortfolioTools(chatId)
   };
 }
 
