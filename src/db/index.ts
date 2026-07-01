@@ -28,6 +28,12 @@ export interface AlertRow {
   condition: 'ABOVE' | 'BELOW';
   is_active: boolean;
   created_at: string;
+  // Multi-condition alert fields
+  alert_type: 'STATIC' | 'PERCENTAGE' | 'TRAILING_STOP';
+  percentage?: number | null;
+  base_price?: number | null;
+  day_high_price?: number | null;
+  day_high_updated_at?: string | null;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -163,18 +169,37 @@ export async function createAlert(
   chatId: string,
   symbol: string,
   targetPrice: number,
-  condition: 'ABOVE' | 'BELOW'
+  condition: 'ABOVE' | 'BELOW',
+  alertType: 'STATIC' | 'PERCENTAGE' | 'TRAILING_STOP' = 'STATIC',
+  percentage?: number,
+  basePrice?: number,
+  dayHighPrice?: number
 ) {
   try {
+    const insertData: any = {
+      chat_id: chatId,
+      symbol: symbol.toUpperCase(),
+      target_price: targetPrice,
+      condition,
+      is_active: true,
+      alert_type: alertType
+    };
+
+    // Add optional fields based on alert type
+    if (percentage !== undefined && percentage !== null) {
+      insertData.percentage = percentage;
+    }
+    if (basePrice !== undefined && basePrice !== null) {
+      insertData.base_price = basePrice;
+    }
+    if (dayHighPrice !== undefined && dayHighPrice !== null) {
+      insertData.day_high_price = dayHighPrice;
+      insertData.day_high_updated_at = new Date().toISOString();
+    }
+
     const { data, error } = await supabase
       .from('alerts')
-      .insert({
-        chat_id: chatId,
-        symbol: symbol.toUpperCase(),
-        target_price: targetPrice,
-        condition,
-        is_active: true
-      })
+      .insert(insertData)
       .select();
     
     if (error) {
@@ -182,7 +207,7 @@ export async function createAlert(
       return { data: null, error };
     }
     
-    console.log(`[DB] Alert created: ${symbol} ${condition} ${targetPrice} for chat ${chatId}`);
+    console.log(`[DB] Alert created: ${symbol} ${alertType} ${condition} ${targetPrice} for chat ${chatId}`);
     return { data: data as AlertRow[], error: null };
   } catch (err: any) {
     console.error('[DB] createAlert exception:', err?.message);
@@ -262,6 +287,89 @@ export async function getActiveAlertsGroupedBySymbol() {
     return { data: grouped, error: null };
   } catch (err: any) {
     console.error('[DB] getActiveAlertsGroupedBySymbol exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Multi-Condition Alert Functions (Trailing Stop Support)
+// ────────────────────────────────────────────────────────────────────
+export async function getTrailingStopAlerts(symbol?: string) {
+  try {
+    let query = supabase
+      .from('alerts')
+      .select('*')
+      .eq('alert_type', 'TRAILING_STOP')
+      .eq('is_active', true);
+    
+    // If symbol provided, filter by symbol
+    if (symbol) {
+      query = query.eq('symbol', symbol.toUpperCase());
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) {
+      console.error('[DB] getTrailingStopAlerts error:', error.message);
+      return { data: null, error };
+    }
+    
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] getTrailingStopAlerts exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function updateDayHigh(alertId: number, newHigh: number) {
+  try {
+    const { data, error } = await supabase
+      .from('alerts')
+      .update({ 
+        day_high_price: newHigh,
+        day_high_updated_at: new Date().toISOString()
+      })
+      .eq('id', alertId)
+      .eq('alert_type', 'TRAILING_STOP')
+      .eq('is_active', true)
+      .select();
+    
+    if (error) {
+      console.error('[DB] updateDayHigh error:', error.message);
+      return { data: null, error };
+    }
+    
+    console.log(`[DB] Day high updated: Alert ID ${alertId}, new high: ${newHigh}`);
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] updateDayHigh exception:', err?.message);
+    return { data: null, error: err };
+  }
+}
+
+export async function resetTrailingStopDayHighs() {
+  try {
+    // Reset day_high_price to NULL and clear timestamp for all active trailing stops
+    const { data, error } = await supabase
+      .from('alerts')
+      .update({ 
+        day_high_price: null,
+        day_high_updated_at: null
+      })
+      .eq('alert_type', 'TRAILING_STOP')
+      .eq('is_active', true)
+      .select();
+    
+    if (error) {
+      console.error('[DB] resetTrailingStopDayHighs error:', error.message);
+      return { data: null, error };
+    }
+    
+    const count = data?.length || 0;
+    console.log(`[DB] Day highs reset: ${count} trailing stop alert(s) reset at market open`);
+    return { data: data as AlertRow[], error: null };
+  } catch (err: any) {
+    console.error('[DB] resetTrailingStopDayHighs exception:', err?.message);
     return { data: null, error: err };
   }
 }

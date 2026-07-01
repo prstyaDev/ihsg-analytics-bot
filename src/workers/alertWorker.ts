@@ -1,7 +1,14 @@
 import axios from 'axios';
 import { bot } from '../bot';
 import { env } from '../config/env';
-import { getActiveAlertsGroupedBySymbol, deactivateAlert, AlertRow } from '../db';
+import { 
+  getActiveAlertsGroupedBySymbol, 
+  deactivateAlert, 
+  AlertRow,
+  getTrailingStopAlerts,
+  updateDayHigh,
+  resetTrailingStopDayHighs
+} from '../db';
 import { isMarketOpen, getMarketStatus } from '../utils/tradingHours';
 
 // ────────────────────────────────────────────────────────────────────
@@ -21,6 +28,7 @@ const api = axios.create({
 // ────────────────────────────────────────────────────────────────────
 let workerInterval: NodeJS.Timeout | null = null;
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+let lastResetDate: string | null = null; // Track last reset date (YYYY-MM-DD)
 
 // ────────────────────────────────────────────────────────────────────
 // Send Alert Notification to User via Telegram
@@ -32,26 +40,78 @@ async function sendAlertNotification(
 ): Promise<boolean> {
   try {
     const symbol = alert.symbol.toUpperCase();
-    const condition = alert.condition === 'ABOVE' ? 'naik di atas' : 'turun di bawah';
     const changePercent = marketData?.change_pct || marketData?.changePct || 'N/A';
     const volume = marketData?.volume || 'N/A';
     const change = marketData?.change || 'N/A';
     
-    // Format rich notification message
-    const message = `🔔 *Alert Triggered!*\n\n` +
-      `📈 *Saham:* ${symbol}\n` +
-      `💰 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n` +
-      `🎯 *Target Anda:* ${condition} Rp ${alert.target_price.toLocaleString('id-ID')}\n\n` +
-      `📊 *Data Pasar:*\n` +
-      `• Perubahan: ${change} (${changePercent}%)\n` +
-      `• Volume: ${volume}\n\n` +
-      `✅ Alert ini telah dinonaktifkan.`;
+    let message = '';
+
+    // Format message based on alert type
+    switch (alert.alert_type) {
+      case 'STATIC': {
+        const condition = alert.condition === 'ABOVE' ? 'naik di atas' : 'turun di bawah';
+        message = `🔔 *Alert Triggered!*\n\n` +
+          `📈 *Saham:* ${symbol}\n` +
+          `💰 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n` +
+          `🎯 *Target Anda:* ${condition} Rp ${alert.target_price.toLocaleString('id-ID')}\n\n` +
+          `📊 *Data Pasar:*\n` +
+          `• Perubahan: ${change} (${changePercent}%)\n` +
+          `• Volume: ${volume}\n\n` +
+          `✅ Alert ini telah dinonaktifkan.`;
+        break;
+      }
+
+      case 'PERCENTAGE': {
+        const condition = alert.condition === 'ABOVE' ? 'naik' : 'turun';
+        const basePrice = alert.base_price || 0;
+        const percentage = alert.percentage || 0;
+        message = `🔔 *Alert Persentase Triggered!*\n\n` +
+          `📈 *Saham:* ${symbol}\n` +
+          `📊 *Kondisi:* ${condition.charAt(0).toUpperCase() + condition.slice(1)} ${percentage}% dari harga base\n` +
+          `💰 *Harga Base:* Rp ${basePrice.toLocaleString('id-ID')} (saat dibuat)\n` +
+          `🎯 *Target:* Rp ${alert.target_price.toLocaleString('id-ID')}\n` +
+          `💹 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n\n` +
+          `📊 *Data Pasar:*\n` +
+          `• Perubahan: ${change} (${changePercent}%)\n` +
+          `• Volume: ${volume}\n\n` +
+          `✅ Alert ini telah dinonaktifkan.`;
+        break;
+      }
+
+      case 'TRAILING_STOP': {
+        const dayHigh = alert.day_high_price || 0;
+        const percentage = alert.percentage || 0;
+        const threshold = dayHigh * (1 - percentage / 100);
+        message = `🔔 *Trailing Stop Alert Triggered!*\n\n` +
+          `📈 *Saham:* ${symbol}\n` +
+          `📉 *Kondisi:* Turun ${percentage}% dari harga tertinggi hari ini\n` +
+          `🏔️ *Harga Tertinggi Hari Ini:* Rp ${dayHigh.toLocaleString('id-ID')}\n` +
+          `🎯 *Threshold:* Rp ${threshold.toLocaleString('id-ID')}\n` +
+          `💹 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n\n` +
+          `📊 *Data Pasar:*\n` +
+          `• Perubahan: ${change} (${changePercent}%)\n` +
+          `• Volume: ${volume}\n\n` +
+          `✅ Alert ini telah dinonaktifkan.`;
+        break;
+      }
+
+      default: {
+        // Fallback to static message
+        const condition = alert.condition === 'ABOVE' ? 'naik di atas' : 'turun di bawah';
+        message = `🔔 *Alert Triggered!*\n\n` +
+          `📈 *Saham:* ${symbol}\n` +
+          `💰 *Harga Saat Ini:* Rp ${currentPrice.toLocaleString('id-ID')}\n` +
+          `🎯 *Target Anda:* ${condition} Rp ${alert.target_price.toLocaleString('id-ID')}\n\n` +
+          `✅ Alert ini telah dinonaktifkan.`;
+        break;
+      }
+    }
     
     await bot.telegram.sendMessage(alert.chat_id, message, { 
       parse_mode: 'Markdown' 
     });
     
-    console.log(`[AlertWorker] ✅ Notification sent to chat ${alert.chat_id} for ${symbol}`);
+    console.log(`[AlertWorker] ✅ Notification sent to chat ${alert.chat_id} for ${symbol} (${alert.alert_type})`);
     return true;
   } catch (err: any) {
     // Handle common errors (user blocked bot, chat not found, etc.)
@@ -94,12 +154,130 @@ async function fetchStockPrice(symbol: string): Promise<{ price: number; data: a
 // Check Individual Alert Against Current Price
 // ────────────────────────────────────────────────────────────────────
 function checkAlertCondition(alert: AlertRow, currentPrice: number): boolean {
-  if (alert.condition === 'ABOVE') {
-    return currentPrice >= alert.target_price;
-  } else if (alert.condition === 'BELOW') {
-    return currentPrice <= alert.target_price;
+  switch (alert.alert_type) {
+    case 'STATIC':
+    case 'PERCENTAGE': {
+      // Both STATIC and PERCENTAGE use target_price comparison (PERCENTAGE is converted at creation)
+      if (alert.condition === 'ABOVE') {
+        return currentPrice >= alert.target_price;
+      } else if (alert.condition === 'BELOW') {
+        return currentPrice <= alert.target_price;
+      }
+      return false;
+    }
+
+    case 'TRAILING_STOP': {
+      // Trailing stop: trigger when price drops below threshold
+      // Threshold = day_high_price * (1 - percentage/100)
+      if (!alert.day_high_price || !alert.percentage) {
+        console.warn(`[AlertWorker] ⚠️  Trailing stop alert ${alert.id} missing day_high_price or percentage`);
+        return false;
+      }
+
+      const threshold = alert.day_high_price * (1 - alert.percentage / 100);
+      const isTriggered = currentPrice <= threshold;
+
+      if (isTriggered) {
+        console.log(
+          `[AlertWorker] 🎯 Trailing stop triggered: ${alert.symbol} ` +
+          `current=${currentPrice}, dayHigh=${alert.day_high_price}, threshold=${threshold.toFixed(2)}`
+        );
+      }
+
+      return isTriggered;
+    }
+
+    default: {
+      console.warn(`[AlertWorker] ⚠️  Unknown alert type: ${alert.alert_type}`);
+      return false;
+    }
   }
-  return false;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Update Trailing Stop Day Highs for a Symbol
+// ────────────────────────────────────────────────────────────────────
+async function updateTrailingStopDayHighs(symbol: string, currentPrice: number): Promise<void> {
+  try {
+    // Fetch all active trailing stop alerts for this symbol
+    const { data: trailingAlerts, error } = await getTrailingStopAlerts(symbol);
+
+    if (error) {
+      console.error(`[AlertWorker] ❌ Failed to fetch trailing stops for ${symbol}:`, error);
+      return;
+    }
+
+    if (!trailingAlerts || trailingAlerts.length === 0) {
+      return; // No trailing stops for this symbol
+    }
+
+    // Update day high for each trailing stop if current price is higher
+    for (const alert of trailingAlerts) {
+      const currentHigh = alert.day_high_price || 0;
+
+      // Initialize day high if null (first check of the day)
+      if (currentHigh === 0 || currentHigh === null) {
+        const { error: updateError } = await updateDayHigh(alert.id, currentPrice);
+        if (!updateError) {
+          console.log(
+            `[AlertWorker] 📈 Day high initialized for ${symbol} alert ${alert.id}: ${currentPrice}`
+          );
+        }
+      } 
+      // Update if current price exceeds day high
+      else if (currentPrice > currentHigh) {
+        const { error: updateError } = await updateDayHigh(alert.id, currentPrice);
+        if (!updateError) {
+          console.log(
+            `[AlertWorker] 📈 Day high updated for ${symbol} alert ${alert.id}: ` +
+            `${currentHigh} → ${currentPrice}`
+          );
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error(`[AlertWorker] ❌ Error updating trailing stops for ${symbol}:`, err?.message);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Check and Reset Day Highs at Market Open (09:00 WIB)
+// ────────────────────────────────────────────────────────────────────
+async function checkAndResetDayHighs(): Promise<void> {
+  try {
+    // Get current date in WIB timezone (YYYY-MM-DD format)
+    const now = new Date();
+    const wibDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+    const currentDate = wibDate.toISOString().split('T')[0]; // YYYY-MM-DD
+    const currentHour = wibDate.getHours();
+    const currentMinute = wibDate.getMinutes();
+
+    // Check if we're at market open time (09:00 WIB)
+    const isMarketOpenTime = currentHour === 9 && currentMinute >= 0 && currentMinute < 5;
+
+    // Only reset if:
+    // 1. We're within market open window (09:00-09:05 WIB)
+    // 2. We haven't already reset today
+    if (isMarketOpenTime && lastResetDate !== currentDate) {
+      console.log(`[AlertWorker] 🔄 Market open detected (${currentDate} 09:00 WIB), resetting day highs...`);
+
+      const { data: resetAlerts, error } = await resetTrailingStopDayHighs();
+
+      if (error) {
+        console.error('[AlertWorker] ❌ Failed to reset day highs:', error);
+        return;
+      }
+
+      const count = resetAlerts?.length || 0;
+      lastResetDate = currentDate; // Update last reset tracking
+
+      console.log(
+        `[AlertWorker] ✅ Day highs reset completed: ${count} trailing stop alert(s) reset at ${currentDate} 09:00 WIB`
+      );
+    }
+  } catch (err: any) {
+    console.error('[AlertWorker] ❌ Error in checkAndResetDayHighs():', err?.message);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -109,7 +287,10 @@ export async function checkAlerts(): Promise<void> {
   try {
     console.log('[AlertWorker] 🔍 Starting alert check cycle...');
     
-    // Fetch all active alerts grouped by symbol
+    // Step 1: Check and reset day highs at market open (09:00 WIB)
+    await checkAndResetDayHighs();
+    
+    // Step 2: Fetch all active alerts grouped by symbol
     const { data: alertsMap, error } = await getActiveAlertsGroupedBySymbol();
     
     if (error) {
@@ -124,7 +305,7 @@ export async function checkAlerts(): Promise<void> {
     
     console.log(`[AlertWorker] 📋 Found ${alertsMap.size} unique symbols with active alerts`);
     
-    // Process each symbol's alerts
+    // Step 3: Process each symbol's alerts
     let triggeredCount = 0;
     let checkedCount = 0;
     
@@ -143,15 +324,19 @@ export async function checkAlerts(): Promise<void> {
         const { price, data: marketData } = priceData;
         console.log(`[AlertWorker] 💹 ${symbol} current price: ${price}`);
         
-        // Check each alert for this symbol
+        // Step 4: Update trailing stop day highs for this symbol
+        await updateTrailingStopDayHighs(symbol, price);
+        
+        // Step 5: Check each alert for this symbol
         for (const alert of alerts) {
           checkedCount++;
           
+          const alertTypeLabel = `[${alert.alert_type}]`;
           const isTriggered = checkAlertCondition(alert, price);
           
           if (isTriggered) {
             console.log(
-              `[AlertWorker] 🎯 Alert triggered! ${symbol} ${alert.condition} ${alert.target_price} ` +
+              `[AlertWorker] 🎯 Alert triggered! ${alertTypeLabel} ${symbol} ${alert.condition} ${alert.target_price} ` +
               `(current: ${price})`
             );
             

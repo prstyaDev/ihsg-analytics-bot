@@ -480,9 +480,11 @@ export function createAlertTools(chatId: string) {
   const createAlertTool = tool({
     description:
       'Membuat alert (pemberitahuan) harga saham yang akan mengirim notifikasi otomatis ke pengguna ' +
-      'ketika harga mencapai target tertentu. ' +
-      'Gunakan tool ini ketika pengguna ingin diberi tahu jika harga saham naik di atas atau turun di bawah nilai tertentu. ' +
-      'Contoh: "alert BBCA di atas 10000", "beri tahu saya jika BBRI turun di bawah 5000", "set alert TLKM above 3500".',
+      'ketika harga mencapai target tertentu. Mendukung 3 tipe alert: ' +
+      '1) Alert harga tetap (contoh: "alert BBCA di atas 10000"), ' +
+      '2) Alert persentase (contoh: "alert BBRI naik 5%" atau "alert ASII turun 3%"), ' +
+      '3) Trailing stop (contoh: "alert TLKM turun 3% dari harga tertinggi hari ini"). ' +
+      'Gunakan tool ini ketika pengguna ingin diberi tahu tentang pergerakan harga saham.',
     inputSchema: z.object({
       symbol: z
         .string()
@@ -490,32 +492,194 @@ export function createAlertTools(chatId: string) {
       targetPrice: z
         .number()
         .positive()
-        .describe('Harga target untuk alert dalam Rupiah, contoh: 10000'),
+        .optional()
+        .describe('Harga target untuk alert dalam Rupiah (opsional jika menggunakan percentage)'),
       condition: z
         .enum(['ABOVE', 'BELOW'])
-        .describe('Kondisi alert: ABOVE (di atas) atau BELOW (di bawah) harga target')
+        .optional()
+        .describe('Kondisi alert: ABOVE (di atas/naik) atau BELOW (di bawah/turun)'),
+      percentage: z
+        .number()
+        .positive()
+        .max(100)
+        .optional()
+        .describe('Persentase untuk alert (0.1-100), contoh: 5 untuk 5%. Gunakan untuk alert persentase atau trailing stop'),
+      isTrailingStop: z
+        .boolean()
+        .optional()
+        .describe('True jika alert adalah trailing stop dari harga tertinggi hari ini')
     }),
-    execute: async ({ symbol, targetPrice, condition }) => {
+    execute: async ({ symbol, targetPrice, condition, percentage, isTrailingStop }) => {
       try {
         const sym = symbol.toUpperCase();
         const { createAlert } = await import('../db');
 
-        const { data, error } = await createAlert(chatIdStr, sym, targetPrice, condition);
-
-        if (error) {
-          console.error('[create_alert Error]:', error.message);
-          return '[SYSTEM ERROR] Gagal membuat alert. Silakan coba lagi.';
+        // Validation: Must have either targetPrice OR percentage
+        if (!targetPrice && !percentage) {
+          return '[SYSTEM ERROR] Harus menyediakan targetPrice atau percentage.';
         }
 
-        const conditionText = condition === 'ABOVE' ? 'di atas' : 'di bawah';
-        console.log(`[Alert] Created: ${sym} ${condition} ${targetPrice} for chat ${chatId}`);
+        if (targetPrice && percentage) {
+          return '[SYSTEM ERROR] Tidak bisa menggunakan targetPrice dan percentage sekaligus. Pilih salah satu.';
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // STATIC ALERT: targetPrice provided
+        // ──────────────────────────────────────────────────────────
+        if (targetPrice && !percentage) {
+          if (!condition) {
+            return '[SYSTEM ERROR] Kondisi (ABOVE/BELOW) diperlukan untuk alert harga tetap.';
+          }
+
+          const { data, error } = await createAlert(
+            chatIdStr, 
+            sym, 
+            targetPrice, 
+            condition,
+            'STATIC'
+          );
+
+          if (error) {
+            console.error('[create_alert Error]:', error.message);
+            return '[SYSTEM ERROR] Gagal membuat alert. Silakan coba lagi.';
+          }
+
+          const conditionText = condition === 'ABOVE' ? 'di atas' : 'di bawah';
+          console.log(`[Alert] Created STATIC: ${sym} ${condition} ${targetPrice} for chat ${chatId}`);
+          
+          return (
+            `[SYSTEM] ✅ Alert berhasil dibuat!\n` +
+            `📊 Saham: ${sym}\n` +
+            `🎯 Kondisi: ${conditionText} Rp ${targetPrice.toLocaleString('id-ID')}\n` +
+            `🔔 Anda akan menerima notifikasi otomatis ketika kondisi terpenuhi selama jam trading (Senin-Jumat 09:00-16:00 WIB).`
+          );
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // PERCENTAGE OR TRAILING STOP ALERT: percentage provided
+        // ──────────────────────────────────────────────────────────
+        if (percentage) {
+          // Validate percentage range
+          if (percentage < 0.1 || percentage > 100) {
+            return '[SYSTEM ERROR] Persentase harus antara 0.1% - 100%.';
+          }
+
+          // Fetch current price from GoAPI
+          console.log(`[Alert] Fetching current price for ${sym} to calculate target...`);
+          let currentPrice: number;
+          
+          try {
+            const { data } = await api.get('/stock/idx/prices', {
+              params: { symbols: sym }
+            });
+            const result = data?.data?.results?.[0] || data?.data || data;
+            const price = result?.close ?? result?.price ?? null;
+
+            if (price === null || price === undefined) {
+              console.warn(`[Alert] Price not found for ${sym}`);
+              return `[SYSTEM ERROR] Gagal mengambil harga pasar untuk ${sym}. Pastikan simbol sudah benar dan pasar sedang buka.`;
+            }
+
+            currentPrice = Number(price);
+            console.log(`[Alert] Current price for ${sym}: ${currentPrice}`);
+          } catch (apiErr: any) {
+            console.error('[Alert] GoAPI error:', apiErr?.message);
+            return '[SYSTEM ERROR] Gagal mengambil harga pasar untuk menghitung target. Silakan coba lagi.';
+          }
+
+          // ──────────────────────────────────────────────────────────
+          // TRAILING STOP ALERT
+          // ──────────────────────────────────────────────────────────
+          if (isTrailingStop) {
+            // Trailing stop: always BELOW condition (price drops from high)
+            const threshold = currentPrice * (1 - percentage / 100);
+            const roundedThreshold = Math.round(threshold * 100) / 100;
+
+            const { data, error } = await createAlert(
+              chatIdStr,
+              sym,
+              roundedThreshold, // Initial threshold based on current price
+              'BELOW',
+              'TRAILING_STOP',
+              percentage,
+              undefined, // No base_price for trailing stop
+              currentPrice // day_high_price initialized to current price
+            );
+
+            if (error) {
+              console.error('[create_alert Error]:', error.message);
+              return '[SYSTEM ERROR] Gagal membuat trailing stop alert. Silakan coba lagi.';
+            }
+
+            console.log(
+              `[Alert] Created TRAILING_STOP: ${sym} ${percentage}% from day high, ` +
+              `initial high=${currentPrice}, threshold=${roundedThreshold} for chat ${chatId}`
+            );
+
+            return (
+              `[SYSTEM] ✅ Trailing stop alert berhasil dibuat!\n` +
+              `📊 Saham: ${sym}\n` +
+              `📉 Kondisi: Turun ${percentage}% dari harga tertinggi hari ini\n` +
+              `💰 Harga Tertinggi Saat Ini: Rp ${currentPrice.toLocaleString('id-ID')}\n` +
+              `🎯 Threshold Awal: Rp ${roundedThreshold.toLocaleString('id-ID')}\n` +
+              `🔄 Threshold akan menyesuaikan otomatis mengikuti pergerakan harga tertinggi sepanjang hari.\n` +
+              `🔔 Notifikasi akan dikirim saat harga turun ${percentage}% dari high hari ini selama jam trading (Senin-Jumat 09:00-16:00 WIB).`
+            );
+          }
+
+          // ──────────────────────────────────────────────────────────
+          // PERCENTAGE ALERT (Snapshot-based)
+          // ──────────────────────────────────────────────────────────
+          if (!condition) {
+            return '[SYSTEM ERROR] Kondisi (ABOVE untuk naik, BELOW untuk turun) diperlukan untuk alert persentase.';
+          }
+
+          // Calculate target price based on percentage and condition
+          let calculatedTarget: number;
+          if (condition === 'ABOVE') {
+            // Price goes UP by percentage
+            calculatedTarget = currentPrice * (1 + percentage / 100);
+          } else {
+            // Price goes DOWN by percentage
+            calculatedTarget = currentPrice * (1 - percentage / 100);
+          }
+
+          const roundedTarget = Math.round(calculatedTarget * 100) / 100;
+
+          const { data, error } = await createAlert(
+            chatIdStr,
+            sym,
+            roundedTarget,
+            condition,
+            'PERCENTAGE',
+            percentage,
+            currentPrice // base_price = current price at creation
+          );
+
+          if (error) {
+            console.error('[create_alert Error]:', error.message);
+            return '[SYSTEM ERROR] Gagal membuat alert persentase. Silakan coba lagi.';
+          }
+
+          const conditionText = condition === 'ABOVE' ? 'naik' : 'turun';
+          console.log(
+            `[Alert] Created PERCENTAGE: ${sym} ${conditionText} ${percentage}%, ` +
+            `base=${currentPrice}, target=${roundedTarget} for chat ${chatId}`
+          );
+
+          return (
+            `[SYSTEM] ✅ Alert persentase berhasil dibuat!\n` +
+            `📊 Saham: ${sym}\n` +
+            `📈 Kondisi: ${conditionText.charAt(0).toUpperCase() + conditionText.slice(1)} ${percentage}% dari harga saat ini\n` +
+            `💰 Harga Base: Rp ${currentPrice.toLocaleString('id-ID')} (saat dibuat)\n` +
+            `🎯 Target: Rp ${roundedTarget.toLocaleString('id-ID')}\n` +
+            `🔔 Anda akan menerima notifikasi otomatis ketika kondisi terpenuhi selama jam trading (Senin-Jumat 09:00-16:00 WIB).`
+          );
+        }
+
+        // Should never reach here
+        return '[SYSTEM ERROR] Parameter tidak valid.';
         
-        return (
-          `[SYSTEM] ✅ Alert berhasil dibuat!\n` +
-          `📊 Saham: ${sym}\n` +
-          `🎯 Kondisi: ${conditionText} Rp ${targetPrice.toLocaleString('id-ID')}\n` +
-          `🔔 Anda akan menerima notifikasi otomatis ketika kondisi terpenuhi selama jam trading (Senin-Jumat 09:00-16:00 WIB).`
-        );
       } catch (err: any) {
         console.error('[create_alert Error]:', err?.message);
         return '[SYSTEM ERROR] Gagal membuat alert. Silakan coba lagi.';
@@ -525,7 +689,7 @@ export function createAlertTools(chatId: string) {
 
   const viewAlertsTool = tool({
     description:
-      'Menampilkan daftar alert harga saham yang aktif milik pengguna. ' +
+      'Menampilkan daftar alert harga saham yang aktif milik pengguna dengan status detail. ' +
       'Gunakan tool ini ketika pengguna ingin melihat alert apa saja yang sudah dibuat. ' +
       'Contoh: "lihat alert saya", "tampilkan semua alert", "daftar alert aktif", "alert apa saja yang sudah saya set?".',
     inputSchema: z.object({}),
@@ -540,19 +704,187 @@ export function createAlertTools(chatId: string) {
         }
 
         if (!alerts || alerts.length === 0) {
-          return '[SYSTEM] Anda belum memiliki alert aktif. Buat alert dengan perintah seperti: "alert BBCA di atas 10000".';
+          return '[SYSTEM] Anda belum memiliki alert aktif. Buat alert dengan perintah seperti: "alert BBCA di atas 10000", "alert BBRI naik 5%", atau "alert TLKM turun 3% dari harga tertinggi hari ini".';
         }
 
         console.log(`[Alert] Fetched ${alerts.length} active alert(s) for chat ${chatId}`);
 
+        // Fetch current prices for all symbols (batch call)
+        const symbols = [...new Set(alerts.map(a => a.symbol.toUpperCase()))];
+        const symbolsParam = symbols.join(',');
+        
+        const priceMap = new Map<string, number>();
+        
+        try {
+          const { data } = await api.get('/stock/idx/prices', {
+            params: { symbols: symbolsParam }
+          });
+          
+          const results = data?.data?.results || [];
+          results.forEach((result: any) => {
+            const sym = result?.symbol?.toUpperCase();
+            const price = result?.close ?? result?.price ?? null;
+            if (sym && price !== null && price !== undefined) {
+              priceMap.set(sym, Number(price));
+            }
+          });
+          
+          console.log(`[Alert] Fetched prices for ${priceMap.size} symbols`);
+        } catch (apiErr: any) {
+          console.warn('[Alert] Failed to fetch current prices:', apiErr?.message);
+          // Continue without prices - will show "Data tidak tersedia"
+        }
+
         let message = `[SYSTEM DATA - ALERTS] Daftar alert aktif Anda (${alerts.length} alert):\n\n`;
         
         alerts.forEach((alert, index) => {
-          const conditionText = alert.condition === 'ABOVE' ? 'di atas' : 'di bawah';
-          message += `${index + 1}. ${alert.symbol} ${conditionText} Rp ${alert.target_price.toLocaleString('id-ID')}\n`;
+          const currentPrice = priceMap.get(alert.symbol.toUpperCase());
+          
+          // Calculate status emoji based on distance to trigger
+          let statusEmoji = '🟢'; // Far from trigger (default)
+          let statusText = 'Belum tercapai';
+          let distance = 0;
+          let distancePercent = 0;
+
+          switch (alert.alert_type) {
+            case 'STATIC': {
+              const conditionText = alert.condition === 'ABOVE' ? 'di atas' : 'di bawah';
+              
+              message += `${index + 1}. 🟢 ${alert.symbol} - Alert Harga Tetap\n`;
+              message += `   • Tipe: ${conditionText.charAt(0).toUpperCase() + conditionText.slice(1)} harga target\n`;
+              message += `   • Target: Rp ${alert.target_price.toLocaleString('id-ID')}\n`;
+              
+              if (currentPrice !== undefined) {
+                distance = Math.abs(currentPrice - alert.target_price);
+                distancePercent = (distance / alert.target_price) * 100;
+
+                // Determine status
+                if (distancePercent <= 1) {
+                  statusEmoji = '🔴';
+                  statusText = 'Sangat dekat dengan trigger!';
+                } else if (distancePercent <= 5) {
+                  statusEmoji = '🟡';
+                  statusText = 'Mendekati trigger';
+                } else {
+                  statusEmoji = '🟢';
+                  statusText = 'Belum tercapai';
+                }
+
+                message += `   • Harga Sekarang: Rp ${currentPrice.toLocaleString('id-ID')}\n`;
+                message += `   • Jarak: Rp ${distance.toLocaleString('id-ID')} (${distancePercent.toFixed(1)}%)\n`;
+                message += `   • Status: ${statusEmoji} ${statusText}\n\n`;
+              } else {
+                message += `   • Harga Sekarang: Data tidak tersedia\n`;
+                message += `   • Status: 🟢 Monitoring aktif\n\n`;
+              }
+              break;
+            }
+
+            case 'PERCENTAGE': {
+              const conditionText = alert.condition === 'ABOVE' ? 'naik' : 'turun';
+              const basePrice = alert.base_price || 0;
+              const percentage = alert.percentage || 0;
+              
+              message += `${index + 1}. 🟢 ${alert.symbol} - Alert Persentase\n`;
+              message += `   • Tipe: ${conditionText.charAt(0).toUpperCase() + conditionText.slice(1)} ${percentage}% dari harga base\n`;
+              message += `   • Harga Base: Rp ${basePrice.toLocaleString('id-ID')} (saat dibuat)\n`;
+              message += `   • Target: Rp ${alert.target_price.toLocaleString('id-ID')}\n`;
+              
+              if (currentPrice !== undefined) {
+                distance = Math.abs(currentPrice - alert.target_price);
+                distancePercent = (distance / alert.target_price) * 100;
+
+                // Determine status
+                if (distancePercent <= 1) {
+                  statusEmoji = '🔴';
+                  statusText = 'Sangat dekat dengan trigger!';
+                } else if (distancePercent <= 5) {
+                  statusEmoji = '🟡';
+                  statusText = 'Mendekati trigger';
+                } else {
+                  statusEmoji = '🟢';
+                  statusText = 'Belum tercapai';
+                }
+
+                message += `   • Harga Sekarang: Rp ${currentPrice.toLocaleString('id-ID')}\n`;
+                message += `   • Jarak: Rp ${distance.toLocaleString('id-ID')} (${distancePercent.toFixed(1)}%)\n`;
+                message += `   • Status: ${statusEmoji} ${statusText}\n\n`;
+              } else {
+                message += `   • Harga Sekarang: Data tidak tersedia\n`;
+                message += `   • Status: 🟢 Monitoring aktif\n\n`;
+              }
+              break;
+            }
+
+            case 'TRAILING_STOP': {
+              const dayHigh = alert.day_high_price || 0;
+              const percentage = alert.percentage || 0;
+              const threshold = dayHigh > 0 ? dayHigh * (1 - percentage / 100) : 0;
+              
+              message += `${index + 1}. 🟢 ${alert.symbol} - Trailing Stop\n`;
+              message += `   • Tipe: Turun ${percentage}% dari harga tertinggi hari ini\n`;
+              
+              if (dayHigh > 0) {
+                message += `   • Harga Tertinggi Hari Ini: Rp ${dayHigh.toLocaleString('id-ID')}`;
+                
+                // Add timestamp if available
+                if (alert.day_high_updated_at) {
+                  try {
+                    const updateTime = new Date(alert.day_high_updated_at);
+                    const wibTime = updateTime.toLocaleString('id-ID', {
+                      timeZone: 'Asia/Jakarta',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    });
+                    message += ` (update ${wibTime} WIB)`;
+                  } catch (e) {
+                    // Skip timestamp if parsing fails
+                  }
+                }
+                message += `\n`;
+                
+                message += `   • Threshold: Rp ${threshold.toLocaleString('id-ID')}\n`;
+                
+                if (currentPrice !== undefined) {
+                  distance = currentPrice - threshold;
+                  distancePercent = threshold > 0 ? (distance / threshold) * 100 : 0;
+
+                  // Determine status for trailing stop
+                  if (distancePercent <= 1) {
+                    statusEmoji = '🔴';
+                    statusText = 'Sangat dekat dengan trigger!';
+                  } else if (distancePercent <= 5) {
+                    statusEmoji = '🟡';
+                    statusText = 'Mendekati trigger';
+                  } else {
+                    statusEmoji = '🟢';
+                    statusText = 'Aman - threshold mengikuti harga';
+                  }
+
+                  message += `   • Harga Sekarang: Rp ${currentPrice.toLocaleString('id-ID')}\n`;
+                  message += `   • Jarak: Rp ${Math.abs(distance).toLocaleString('id-ID')} (${Math.abs(distancePercent).toFixed(1)}%)\n`;
+                  message += `   • Status: ${statusEmoji} ${statusText}\n\n`;
+                } else {
+                  message += `   • Harga Sekarang: Data tidak tersedia\n`;
+                  message += `   • Status: 🟢 Monitoring aktif\n\n`;
+                }
+              } else {
+                message += `   • Harga Tertinggi Hari Ini: Belum diinisialisasi\n`;
+                message += `   • Status: 🟡 Menunggu data harga pertama\n\n`;
+              }
+              break;
+            }
+
+            default: {
+              // Fallback for unknown type
+              const conditionText = alert.condition === 'ABOVE' ? 'di atas' : 'di bawah';
+              message += `${index + 1}. ${alert.symbol} ${conditionText} Rp ${alert.target_price.toLocaleString('id-ID')}\n\n`;
+              break;
+            }
+          }
         });
 
-        message += '\nSampaikan daftar alert ini ke pengguna dengan format yang rapi dan informatif.';
+        message += 'Sampaikan daftar alert ini ke pengguna dengan format yang rapi dan informatif. Jelaskan status setiap alert dengan jelas.';
         
         return message;
       } catch (err: any) {
