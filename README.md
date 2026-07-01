@@ -286,7 +286,22 @@ Query real-time market data and get AI-powered insights.
 
 🏢 Broker summary:
 "Bandarmologi BBCA"
+
+📊 Technical analysis:
+"Analisa teknikal BBCA"
+"RSI TLKM berapa sekarang?"
+"MACD BBRI gimana?"
+
+🎯 Comprehensive analysis:
+"Analisa lengkap saham ASII"
+"Cek kondisi BBNI secara detail"
 ```
+
+**Technical Indicators:**
+- **RSI (14-period)** - Overbought/oversold momentum indicator
+- **MACD (12/26/9)** - Trend-following momentum indicator
+- **Moving Averages** - SMA 20, EMA 20 (SMA 50 if data available)
+- **Support/Resistance** - Dynamic levels from 30-day highs/lows
 
 ---
 
@@ -324,9 +339,9 @@ Query real-time market data and get AI-powered insights.
 
 ## 🔧 Tool Registry
 
-The bot exposes 11 tools to the AI agent:
+The bot exposes 18 tools to the AI agent:
 
-### Market Data Tools (8)
+### Market Data Tools (9)
 
 | Tool | API Endpoint | Parameters | Description |
 |------|--------------|------------|-------------|
@@ -338,6 +353,7 @@ The bot exposes 11 tools to the AI agent:
 | `get_fundamentals` | `GET /stock/idx/{symbol}/profile` | `symbol` | Financial ratios & profile |
 | `get_broker_summary` | `GET /stock/idx/{symbol}/broker_summary` | `symbol`, `date?` | Broker trading activity |
 | `request_chart` | Internal | `symbol` | Generate price chart |
+| `get_technical_indicators` | `GET /stock/idx/{symbol}/historical` + Analysis | `symbol` | RSI, MACD, MA, S/R levels |
 
 ### Watchlist Tools (3)
 
@@ -347,7 +363,23 @@ The bot exposes 11 tools to the AI agent:
 | `get_watchlist` | - | Retrieve user's watchlist |
 | `remove_from_watchlist` | `symbol` | Remove stock from watchlist |
 
-> **Note**: Watchlist tools use factory pattern with automatic `chat_id` injection from Telegram context.
+### Alert Tools (3)
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `create_alert` | `symbol`, `targetPrice?`, `condition?`, `percentage?`, `isTrailingStop?` | Create price alert |
+| `view_alerts` | - | View active alerts with status |
+| `delete_alert` | `symbol` | Remove alert |
+
+### Portfolio Tools (3)
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `add_to_portfolio` | `symbol`, `averagePrice`, `totalLot` | Add stock to portfolio |
+| `get_portfolio` | - | View portfolio with P/L |
+| `remove_from_portfolio` | `symbol` | Remove stock from portfolio |
+
+> **Note**: Watchlist, Alert, and Portfolio tools use factory pattern with automatic `chat_id` injection from Telegram context.
 
 ---
 

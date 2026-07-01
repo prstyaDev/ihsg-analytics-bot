@@ -14,6 +14,7 @@ import {
   getPortfolio,
   removeFromPortfolio
 } from '../db';
+import { analyzeTechnicalIndicators } from '../utils/technical';
 
 const api = axios.create({
   baseURL: 'https://api.goapi.io',
@@ -25,6 +26,9 @@ const api = axios.create({
 });
 
 const cache = new NodeCache({ stdTTL: 60, checkperiod: 30 });
+
+// Separate cache for technical indicators with longer TTL (5 minutes)
+const technicalCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 function getDateRange(daysBack: number) {
   const to = new Date();
@@ -356,6 +360,84 @@ export const requestChart = tool({
   execute: async ({ symbol }) => {
     // Tool ini hanya akan mengembalikan command khusus untuk di-intercept oleh Telegram Bot.
     return `[INSTRUCTION: GENERATE_CHART_FOR_SYMBOL: ${symbol.toUpperCase()}]`;
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────────
+// 9. GET TECHNICAL INDICATORS
+// ────────────────────────────────────────────────────────────────────────────────
+export const getTechnicalIndicators = tool({
+  description:
+    'Mendapatkan analisis teknikal lengkap untuk suatu saham, meliputi RSI (Relative Strength Index), ' +
+    'MACD (Moving Average Convergence Divergence), Moving Averages (SMA/EMA), dan Support/Resistance levels. ' +
+    'Gunakan tool ini ketika pengguna bertanya tentang analisis teknikal, momentum, overbought/oversold, ' +
+    'atau tren teknikal suatu saham. Tool ini juga OTOMATIS dipanggil ketika pengguna meminta analisis ' +
+    'mendalam/lengkap suatu saham untuk memberikan gambaran komprehensif. ' +
+    'Contoh: "analisa teknikal BBCA", "RSI TLKM berapa?", "MACD BBRI gimana?", "analisa lengkap ASII".',
+  inputSchema: z.object({
+    symbol: z
+      .string()
+      .describe('Kode emiten saham 4 huruf di BEI untuk dianalisis secara teknikal, contoh: BBCA')
+  }),
+  execute: async ({ symbol }) => {
+    try {
+      const sym = symbol.toUpperCase();
+      const { dateFrom, dateTo } = getDateRange(30);
+      const cacheKey = `technical_${sym}_${dateFrom}_${dateTo}`;
+
+      // Check cache first
+      const cached = technicalCache.get<string>(cacheKey);
+      if (cached) {
+        console.log(`[Technical Tool] Cache HIT: ${cacheKey}`);
+        return cached;
+      }
+
+      console.log(`[Technical Tool] Cache MISS: ${cacheKey} - Fetching fresh data`);
+
+      // Fetch historical data from GoAPI (30 days)
+      const { data } = await api.get(`/stock/idx/${sym}/historical`, {
+        params: { from: dateFrom, to: dateTo }
+      });
+
+      console.log(`[Technical Tool] Historical data fetched for ${sym}: ${data?.data?.results?.length || 0} records`);
+
+      // Extract historical results
+      const historicalResults = data?.data?.results || data?.data || [];
+      
+      if (!Array.isArray(historicalResults) || historicalResults.length === 0) {
+        console.warn(`[Technical Tool] No historical data available for ${sym}`);
+        return `[SYSTEM ERROR] Data historis tidak tersedia untuk ${sym}. Pastikan kode saham sudah benar.`;
+      }
+
+      // Perform technical analysis
+      const analysis = analyzeTechnicalIndicators(sym, historicalResults);
+
+      // Format output for AI consumption
+      const output =
+        `[SYSTEM DATA - ANALISIS TEKNIKAL] Emiten: ${sym} | Data: ${analysis.dataPoints} hari\n\n` +
+        `📊 **RSI (Relative Strength Index)**\n` +
+        `${analysis.rsi.message}\n\n` +
+        `📈 **MACD (Moving Average Convergence Divergence)**\n` +
+        `${analysis.macd.message}\n\n` +
+        `📉 **Moving Averages**\n` +
+        `${analysis.movingAverages.message}\n\n` +
+        `🎯 **Support & Resistance**\n` +
+        `${analysis.supportResistance.message}\n\n` +
+        (analysis.warnings.length > 0
+          ? `⚠️ **Catatan:**\n${analysis.warnings.map(w => `• ${w}`).join('\n')}\n\n`
+          : '') +
+        `Berikan rangkuman analisis teknikal yang informatif dan mudah dipahami dalam bahasa Indonesia. ` +
+        `Jelaskan implikasi dari indikator-indikator ini terhadap keputusan investasi.`;
+
+      // Cache the result for 5 minutes
+      technicalCache.set(cacheKey, output);
+      console.log(`[Technical Tool] Calculated and cached for ${sym}: RSI=${analysis.rsi.value}, MACD=${analysis.macd.macd}`);
+
+      return output;
+    } catch (err: any) {
+      console.error('[Technical Tool Error]:', err?.response?.status, err?.response?.data || err?.message);
+      return `[SYSTEM ERROR] Gagal mengambil data analisis teknikal untuk ${symbol.toUpperCase()}. Silakan coba lagi.`;
+    }
   }
 });
 
@@ -1195,6 +1277,8 @@ export function createPortfolioTools(chatId: string) {
 // ────────────────────────────────────────────────────────────────────────────────
 // TOOLS REGISTRY
 // ────────────────────────────────────────────────────────────────────────────────
+// TOOLS REGISTRY
+// ────────────────────────────────────────────────────────────────────────────────
 const baseTools = {
   get_stock_price: getPrice,
   get_market_summary: getMarketSummary,
@@ -1203,7 +1287,8 @@ const baseTools = {
   get_historical_data: getHistoricalData,
   get_fundamentals: getFundamentals,
   get_broker_summary: getBrokerSummary,
-  request_chart: requestChart
+  request_chart: requestChart,
+  get_technical_indicators: getTechnicalIndicators
 };
 
 export function createAllTools(chatId: string) {
