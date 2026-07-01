@@ -488,8 +488,8 @@ ALERT_CHECK_INTERVAL_MS=120000
 
 **1. Clone the Repository**
 ```bash
-git clone https://github.com/prstyaDev/ihsg-bot.git
-cd ihsg-bot
+git clone https://github.com/prstyaDev/ihsg-analytics-bot.git
+cd ihsg-analytics-bot
 ```
 
 **2. Install Dependencies**
@@ -741,7 +741,5 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) file for 
 <div align="center">
 
 **Built with ❤️ by [prstyaDev](https://github.com/prstyaDev)**
-
-*Production-ready | Enterprise-grade | Indonesian Stock Market*
 
 </div>
