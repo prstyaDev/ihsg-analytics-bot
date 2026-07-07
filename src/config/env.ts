@@ -14,6 +14,12 @@ const schema = z.object({
   NODE_ENV: z.enum(['development', 'production']).default('development'),
   
   /**
+   * JWT secret key for /api/chat authentication
+   * Required for web client authentication via Cloudflare tunnel
+   */
+  JWT_SECRET: z.string().min(32),
+  
+  /**
    * Alert worker check interval in milliseconds
    * Controls how frequently the background worker checks active price alerts
    * 

@@ -1,11 +1,42 @@
 import express from 'express';
+import cors from 'cors';
 import { bot } from './bot';
 import { env } from './config/env';
 import { testConnection } from './db';
 import { startAlertWorker, stopAlertWorker } from './workers/alertWorker';
+import chatRouter from './api/chat';
 
 const app = express();
+
+// ────────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE
+// ────────────────────────────────────────────────────────────────────────────────
+app.use(cors({
+  origin: '*', // Configure this in production to specific domains
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
+
+// ────────────────────────────────────────────────────────────────────────────────
+// API ROUTES
+// ────────────────────────────────────────────────────────────────────────────────
+app.use('/api', chatRouter);
+
+// ────────────────────────────────────────────────────────────────────────────────
+// ROOT HEALTH CHECK
+// ────────────────────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({ 
+    service: 'IHSG Analytics Bot',
+    status: 'running',
+    version: '2.0.0',
+    endpoints: {
+      chat: 'POST /api/chat',
+      health: 'GET /api/health',
+    },
+  });
+});
 
 async function main() {
   // Test database connection (graceful degradation if fails)

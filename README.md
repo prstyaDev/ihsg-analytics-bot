@@ -82,6 +82,28 @@ IHSG Analytics Bot is a **production-ready, enterprise-grade** Telegram bot that
 - **Supabase** - Managed PostgreSQL database with real-time subscriptions
 - **QuickChart.io** - Chart rendering service (30-day historical data)
 
+### 🌐 API Endpoints (Web Integration)
+
+The bot now provides **RESTful API endpoints** for web client integration:
+
+- **POST /api/chat** - Streaming AI chat endpoint with JWT authentication
+- **GET /api/health** - Health check endpoint
+- **GET /** - Root endpoint with service information
+
+**Full API Documentation:** See [API_DOCUMENTATION.md](./API_DOCUMENTATION.md)
+
+**Quick Start:**
+```bash
+# Generate JWT token
+npm run token webuser123 websession456 7d
+
+# Test endpoint
+curl -N -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{"message":"Berapa harga BBCA?"}'
+```
+
 ---
 
 ## 🎯 Core Features Deep-Dive
