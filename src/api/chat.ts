@@ -9,7 +9,7 @@ import { createAllTools } from '../tools/registry';
 export const chatRouter = Router();
 
 // ────────────────────────────────────────────────────────────────────────────────
-// JWT MIDDLEWARE
+// JWT MIDDLEWARE (IMPROVED WITH DETAILED LOGGING)
 // ────────────────────────────────────────────────────────────────────────────────
 interface JWTPayload {
   userId: string;
@@ -17,21 +17,74 @@ interface JWTPayload {
 }
 
 const verifyJWT = (req: Request, res: Response, next: any) => {
-  const authHeader = req.headers.authorization;
+  // Case-insensitive header check (handle both string and string[])
+  let authHeader = req.headers.authorization || req.headers.Authorization;
   
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid authorization header' });
+  // Convert string[] to string if needed
+  if (Array.isArray(authHeader)) {
+    authHeader = authHeader[0];
+  }
+  
+  // Detailed logging for debugging
+  console.log('[JWT Middleware] Incoming request to:', req.path);
+  console.log('[JWT Middleware] Authorization header:', authHeader ? 'Present' : 'Missing');
+  
+  if (!authHeader || typeof authHeader !== 'string') {
+    console.warn('[JWT Middleware] ❌ No authorization header found');
+    return res.status(401).json({ 
+      error: 'Missing authorization header',
+      hint: 'Include "Authorization: Bearer <token>" in request headers'
+    });
   }
 
-  const token = authHeader.substring(7); // Remove "Bearer "
+  // Case-insensitive "Bearer" prefix check
+  const headerLower = authHeader.toLowerCase();
+  if (!headerLower.startsWith('bearer ')) {
+    console.warn('[JWT Middleware] ❌ Invalid authorization format:', authHeader.substring(0, 20) + '...');
+    return res.status(401).json({ 
+      error: 'Invalid authorization header format',
+      hint: 'Header must start with "Bearer " followed by token'
+    });
+  }
+
+  // Extract token (handle both "Bearer " and "bearer ")
+  const token = authHeader.substring(7).trim();
+  
+  if (!token || token.length === 0) {
+    console.warn('[JWT Middleware] ❌ Empty token after "Bearer" prefix');
+    return res.status(401).json({ 
+      error: 'Empty token',
+      hint: 'Token value is required after "Bearer " prefix'
+    });
+  }
+
+  console.log('[JWT Middleware] Token extracted, length:', token.length);
   
   try {
     const decoded = jwt.verify(token, env.JWT_SECRET) as JWTPayload;
     (req as any).user = decoded;
+    console.log('[JWT Middleware] ✅ Token verified successfully for user:', decoded.userId);
     next();
-  } catch (error) {
-    console.error('[JWT Error]:', error);
-    return res.status(403).json({ error: 'Invalid or expired token' });
+  } catch (error: any) {
+    console.error('[JWT Middleware] ❌ Token verification failed:', error.message);
+    
+    // Detailed error response
+    let errorMessage = 'Invalid or expired token';
+    let hint = 'Generate a new token using the token generation script';
+    
+    if (error.name === 'TokenExpiredError') {
+      errorMessage = 'Token has expired';
+      hint = 'Generate a new token with "npm run token <userId> <chatId> <duration>"';
+    } else if (error.name === 'JsonWebTokenError') {
+      errorMessage = 'Malformed token';
+      hint = 'Ensure token is properly formatted JWT';
+    }
+    
+    return res.status(403).json({ 
+      error: errorMessage,
+      hint,
+      details: env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -121,10 +174,11 @@ chatRouter.post('/chat', verifyJWT, async (req: Request, res: Response) => {
     // Create tools registry (web client doesn't need chatId for watchlist/alerts)
     const allTools = createAllTools('web-client');
 
-    // Set response headers for streaming
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    // Set response headers for streaming (Vercel AI SDK DataStream Protocol)
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     let usedFallback = false;
 
@@ -139,13 +193,20 @@ chatRouter.post('/chat', verifyJWT, async (req: Request, res: Response) => {
         maxRetries: 0,
       });
 
-      // Stream response to client
+      // Stream response using Vercel AI SDK DataStream Protocol
+      // Format: 0:"text chunk" untuk text delta
+      // Format: d:{"finishReason":"stop"} untuk done
       for await (const chunk of result.textStream) {
-        res.write(`data: ${JSON.stringify({ type: 'text', content: chunk })}\n\n`);
+        // Escape quotes dalam chunk text
+        const escapedChunk = chunk.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        res.write(`0:"${escapedChunk}"\n`);
       }
 
-      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      // Send finish marker
+      res.write(`d:{"finishReason":"stop"}\n`);
       res.end();
+
+      console.log('[Stream] ✅ Primary AI streaming completed successfully');
 
     } catch (primaryError: any) {
       console.error('[Aggregator Stream Error]:', primaryError?.message);
@@ -164,23 +225,26 @@ chatRouter.post('/chat', verifyJWT, async (req: Request, res: Response) => {
           maxRetries: 0,
         });
 
-        // Stream fallback response
+        // Stream fallback response using DataStream Protocol
         for await (const chunk of fallbackResult.textStream) {
-          res.write(`data: ${JSON.stringify({ type: 'text', content: chunk })}\n\n`);
+          const escapedChunk = chunk.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          res.write(`0:"${escapedChunk}"\n`);
         }
 
-        res.write(`data: ${JSON.stringify({ type: 'done', fallback: true })}\n\n`);
+        // Send finish marker with fallback indicator
+        res.write(`d:{"finishReason":"stop","fallback":true}\n`);
         res.end();
 
-        console.log('[System] Gemini fallback succeeded');
+        console.log('[Stream] ✅ Gemini fallback streaming completed successfully');
 
       } catch (fallbackError: any) {
         console.error('[Gemini Fallback Error]:', fallbackError?.message);
         
-        res.write(`data: ${JSON.stringify({ 
-          type: 'error', 
-          content: '⚠️ Layanan AI sedang mengalami gangguan. Silakan coba lagi dalam beberapa saat.' 
-        })}\n\n`);
+        // Send error in DataStream Protocol format
+        const errorMsg = '⚠️ Layanan AI sedang mengalami gangguan. Silakan coba lagi dalam beberapa saat.';
+        const escapedError = errorMsg.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        res.write(`0:"${escapedError}"\n`);
+        res.write(`e:{"error":"AI_SERVICE_UNAVAILABLE"}\n`);
         res.end();
       }
     }
